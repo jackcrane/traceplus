@@ -238,6 +238,28 @@ private struct TracesView: View {
                     rhs.time.addingTimeInterval(rhs.durationMilliseconds / 1_000)
             }
     }
+    private var selectedSpanDescendants: [CollectorState.TraceItem] {
+        guard let selectedSpan else { return [] }
+
+        var knownIDs = Set([selectedSpan.id])
+        var descendantIDs = Set<CollectorState.TraceItem.ID>()
+        var parentSpanIDs = Set([selectedSpan.spanID])
+
+        while true {
+            let children = selectedTrace.filter { span in
+                !knownIDs.contains(span.id) &&
+                    span.parentSpanID.map(parentSpanIDs.contains) == true
+            }
+            guard !children.isEmpty else { break }
+            knownIDs.formUnion(children.map(\.id))
+            descendantIDs.formUnion(children.map(\.id))
+            parentSpanIDs.formUnion(children.map(\.spanID))
+        }
+
+        // Preserve the exact ordering used by the primary waterfall, including
+        // its ordering for spans with identical timestamps.
+        return selectedTrace.filter { descendantIDs.contains($0.id) }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -253,6 +275,10 @@ private struct TracesView: View {
                                     traceStart: selectedTrace.first?.time,
                                     parentSpan: selectedTrace.first { $0.spanID == selectedSpan.parentSpanID },
                                     blockedBySpan: blockedBySpan,
+                                    descendantSpans: selectedSpanDescendants,
+                                    traceSpanCount: selectedTrace.count,
+                                    selectedSpanID: $selectedSpanID,
+                                    hoveredSpanID: $hoveredSpanID,
                                     selectParent: { parent in selectedSpanID = parent.id },
                                     setHoveredSpan: { hoveredSpanID = $0 },
                                     setParentLinkTarget: { parentLinkTargetSpanID = $0 },
@@ -307,7 +333,15 @@ private struct TracesView: View {
                     selectedSpanID: $selectedSpanID,
                     hoveredSpanID: $hoveredSpanID,
                     parentLinkTargetSpanID: parentLinkTargetSpanID,
-                    blockedByLinkTargetSpanID: blockedByLinkTargetSpanID
+                    blockedByLinkTargetSpanID: blockedByLinkTargetSpanID,
+                    showsSpanLabels: true,
+                    showsTimelineGrid: true,
+                    timelineStart: nil,
+                    timelineEnd: nil,
+                    timelineLeadingPadding: 0,
+                    displayedTimelineStartMilliseconds: 0,
+                    timelineTickCount: 5,
+                    descendantTimeline: nil
                 )
                     .frame(minWidth: 0, minHeight: 0)
                 } else {
@@ -392,18 +426,46 @@ private struct NativeSplitPositionDriver: NSViewRepresentable {
     final class Coordinator { var lastFraction: CGFloat? }
 }
 
+struct DescendantTimeline {
+    let start: Date
+    let end: Date
+    let traceRelativeStartMilliseconds: Double
+
+    init(spans: [CollectorState.TraceItem], traceStart: Date) {
+        precondition(!spans.isEmpty, "A descendant timeline requires at least one span.")
+        start = spans.map(\.time).min()!
+        end = spans
+            .map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }
+            .max()!
+        traceRelativeStartMilliseconds = start.timeIntervalSince(traceStart) * 1_000
+    }
+
+    func position(for span: CollectorState.TraceItem) -> Double {
+        span.time.timeIntervalSince(start) / end.timeIntervalSince(start)
+    }
+}
+
 private struct TraceWaterfall: View {
     let spans: [CollectorState.TraceItem]
     @Binding var selectedSpanID: CollectorState.TraceItem.ID?
     @Binding var hoveredSpanID: CollectorState.TraceItem.ID?
     let parentLinkTargetSpanID: CollectorState.TraceItem.ID?
     let blockedByLinkTargetSpanID: CollectorState.TraceItem.ID?
-    private var start: Date { spans.map(\.time).min() ?? .now }
-    private var end: Date { spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start.addingTimeInterval(0.001) }
+    let showsSpanLabels: Bool
+    let showsTimelineGrid: Bool
+    let timelineStart: Date?
+    let timelineEnd: Date?
+    let timelineLeadingPadding: CGFloat
+    let displayedTimelineStartMilliseconds: Double
+    let timelineTickCount: Int
+    let descendantTimeline: DescendantTimeline?
+    private var start: Date { timelineStart ?? spans.map(\.time).min() ?? .now }
+    private var end: Date { max(timelineEnd ?? spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start, start.addingTimeInterval(0.001)) }
     /// Reserve only the room needed by the widest span name. This keeps the
     /// waterfall as wide as possible while preventing an unusually long
     /// operation name from consuming the entire panel.
     private var labelWidth: CGFloat {
+        guard showsSpanLabels else { return 0 }
         let nameFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         let headerWidth = ("SPAN" as NSString).size(withAttributes: [.font: nameFont]).width
 
@@ -423,11 +485,24 @@ private struct TraceWaterfall: View {
                     GeometryReader { viewport in
                         let duration = max(end.timeIntervalSince(start), 0.001)
                         let rowTrailingPadding: CGFloat = 2
-                        let timelineWidth = max(300, viewport.size.width - labelWidth - 8 - rowTrailingPadding)
+                        let labelSpacing: CGFloat = showsSpanLabels ? 8 : 0
+                        let minimumTimelineWidth: CGFloat = showsSpanLabels ? 300 : 1
+                        let timelineWidth = max(minimumTimelineWidth, viewport.size.width - labelWidth - labelSpacing - timelineLeadingPadding - rowTrailingPadding)
+                        let timelineStartX = labelWidth + labelSpacing + timelineLeadingPadding
                         VStack(alignment: .leading, spacing: 0) {
-                            HStack(spacing: 8) {
-                                Text("SPAN").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .trailing)
-                                TraceRuler(width: timelineWidth, durationMilliseconds: duration * 1_000)
+                            HStack(spacing: labelSpacing) {
+                                if showsSpanLabels {
+                                    Text("SPAN").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .trailing)
+                                }
+                                HStack(spacing: 0) {
+                                    Color.clear.frame(width: timelineLeadingPadding)
+                                    TraceRuler(
+                                        width: timelineWidth,
+                                        durationMilliseconds: duration * 1_000,
+                                        startMilliseconds: displayedTimelineStartMilliseconds,
+                                        tickCount: timelineTickCount
+                                    )
+                                }
                             }
                             .frame(height: 18)
                             .frame(width: viewport.size.width, alignment: .leading)
@@ -442,6 +517,7 @@ private struct TraceWaterfall: View {
                                     descendantGroupBox(
                                         groupedSpans: selectedGroup,
                                         timelineWidth: timelineWidth,
+                                        timelineStartX: timelineStartX,
                                         duration: duration,
                                         bottomExtension: selectedBottomExtension
                                     )
@@ -449,6 +525,7 @@ private struct TraceWaterfall: View {
                                         descendantGroupBox(
                                             groupedSpans: hoveredGroup,
                                             timelineWidth: timelineWidth,
+                                            timelineStartX: timelineStartX,
                                             duration: duration,
                                             bottomExtension: hoveredBottomExtension
                                         )
@@ -456,37 +533,53 @@ private struct TraceWaterfall: View {
 
                                     VStack(spacing: 0) {
                                     ForEach(spans) { span in
-                                    HStack(spacing: 8) {
-                                        Text(span.name)
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                            .frame(width: labelWidth, alignment: .trailing)
-                                        ZStack(alignment: .leading) {
-                                            TimelineGrid(width: timelineWidth)
+                                    HStack(spacing: labelSpacing) {
+                                        if showsSpanLabels {
+                                            Text(span.name)
+                                                .font(.caption)
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+                                                .frame(width: labelWidth, alignment: .trailing)
+                                        }
+                                        HStack(spacing: 0) {
+                                            Color.clear.frame(width: timelineLeadingPadding)
+                                            ZStack(alignment: .leading) {
+                                                if showsTimelineGrid {
+                                                    TimelineGrid(width: timelineWidth)
+                                                }
                                             let elapsedMilliseconds: Double = span.time.timeIntervalSince(start) * 1_000
-                                            let offset: CGFloat = max(0, timelineWidth * elapsedMilliseconds / (duration * 1_000))
-                                            let width: CGFloat = max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
-                                            let spanEndOffset = min(timelineWidth, offset + width)
-                                            WaterfallBar(
-                                                span: span,
-                                                width: width,
-                                                offsetMilliseconds: elapsedMilliseconds,
-                                                isSelected: selectedSpanID == span.id,
-                                                isHovered: hoveredSpanID == span.id,
-                                                select: { selectedSpanID = span.id }
+                                            let position = descendantTimeline.map { $0.position(for: span) }
+                                                ?? elapsedMilliseconds / (duration * 1_000)
+                                            let offset: CGFloat = min(timelineWidth, max(0, timelineWidth * position))
+                                            let width: CGFloat = min(
+                                                max(0, timelineWidth - offset),
+                                                max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
                                             )
-                                                .offset(x: offset)
+                                            let spanEndOffset = min(timelineWidth, offset + width)
+                                            HStack(spacing: 0) {
+                                                Color.clear.frame(width: offset)
+                                                WaterfallBar(
+                                                    span: span,
+                                                    width: width,
+                                                    offsetMilliseconds: displayedTimelineStartMilliseconds + elapsedMilliseconds,
+                                                    isSelected: selectedSpanID == span.id,
+                                                    isHovered: hoveredSpanID == span.id,
+                                                    select: { selectedSpanID = span.id }
+                                                )
+                                                Spacer(minLength: 0)
+                                            }
+                                            .frame(width: timelineWidth, alignment: .leading)
                                             WaterfallTimingAnnotations(
-                                                startMilliseconds: elapsedMilliseconds,
-                                                endMilliseconds: elapsedMilliseconds + span.durationMilliseconds,
+                                                startMilliseconds: displayedTimelineStartMilliseconds + elapsedMilliseconds,
+                                                endMilliseconds: displayedTimelineStartMilliseconds + elapsedMilliseconds + span.durationMilliseconds,
                                                 spanStartX: offset,
                                                 spanEndX: spanEndOffset,
                                                 timelineWidth: timelineWidth,
                                                 isVisible: hoveredSpanID == span.id || selectedSpanID == span.id,
                                                 endLabelPadding: endLabelPadding(for: span, timelineWidth: timelineWidth, duration: duration)
                                             )
-                                        }.frame(height: 18)
+                                            }.frame(width: timelineWidth, height: 18)
+                                        }
                                     }
                                     .frame(height: 22)
                                     .frame(width: viewport.size.width, alignment: .leading)
@@ -508,9 +601,10 @@ private struct TraceWaterfall: View {
                         }
                         .overlay {
                             WaterfallCursorOverlay(
-                                timelineStartX: labelWidth + 8,
+                                timelineStartX: timelineStartX,
                                 timelineWidth: timelineWidth,
                                 durationMilliseconds: duration * 1_000,
+                                startMilliseconds: displayedTimelineStartMilliseconds,
                                 headerHeight: 18
                             )
                         }
@@ -521,7 +615,7 @@ private struct TraceWaterfall: View {
     }
 
     @ViewBuilder
-    private func descendantGroupBox(groupedSpans: [CollectorState.TraceItem], timelineWidth: CGFloat, duration: TimeInterval, bottomExtension: CGFloat) -> some View {
+    private func descendantGroupBox(groupedSpans: [CollectorState.TraceItem], timelineWidth: CGFloat, timelineStartX: CGFloat, duration: TimeInterval, bottomExtension: CGFloat) -> some View {
         if groupedSpans.count > 1, groupedSpans.count * 2 < spans.count {
             let spanIDs = Set(groupedSpans.map(\.id))
             let includedIndices = spans.indices.filter { spanIDs.contains(spans[$0].id) }
@@ -533,7 +627,7 @@ private struct TraceWaterfall: View {
                     bounds.max = max(bounds.max, min(timelineWidth, offset + width))
                 }
                 let padding: CGFloat = 2
-                let x = labelWidth + 8 + horizontalBounds.min - padding
+                let x = timelineStartX + horizontalBounds.min - padding
                 let y = CGFloat(firstIndex * 22) + 2 - padding
                 let width = horizontalBounds.max - horizontalBounds.min + (padding * 2)
                 let height = CGFloat((lastIndex - firstIndex) * 22) + 18 + (padding * 2) + bottomExtension
@@ -834,6 +928,7 @@ private struct WaterfallCursorOverlay: NSViewRepresentable {
     let timelineStartX: CGFloat
     let timelineWidth: CGFloat
     let durationMilliseconds: Double
+    let startMilliseconds: Double
     let headerHeight: CGFloat
 
     func makeNSView(context: Context) -> CursorTrackingView {
@@ -844,6 +939,7 @@ private struct WaterfallCursorOverlay: NSViewRepresentable {
         view.timelineStartX = timelineStartX
         view.timelineWidth = timelineWidth
         view.durationMilliseconds = durationMilliseconds
+        view.startMilliseconds = startMilliseconds
         view.headerHeight = headerHeight
     }
 }
@@ -852,6 +948,7 @@ private final class CursorTrackingView: NSView {
     var timelineStartX: CGFloat = 0
     var timelineWidth: CGFloat = 0
     var durationMilliseconds: Double = 0
+    var startMilliseconds: Double = 0
     var headerHeight: CGFloat = 18
 
     private let cursorRule = NSView()
@@ -918,7 +1015,7 @@ private final class CursorTrackingView: NSView {
         }
 
         let elapsedX = min(max(0, location.x - timelineStartX), timelineWidth)
-        let label = String(format: "+%.2f ms", elapsedX / timelineWidth * durationMilliseconds)
+        let label = String(format: "+%.2f ms", startMilliseconds + (elapsedX / timelineWidth * durationMilliseconds))
         let labelWidth = ceil((label as NSString).size(withAttributes: [.font: timeLabel.font!]).width) + 10
         let labelX = min(location.x, max(0, bounds.width - labelWidth))
 
@@ -975,9 +1072,20 @@ private struct TimelineGrid: View {
 private struct TraceRuler: View {
     let width: CGFloat
     let durationMilliseconds: Double
+    let startMilliseconds: Double
+    let tickCount: Int
     var body: some View {
-        HStack { ForEach(0...4, id: \.self) { tick in Text(String(format: "%.1f ms", durationMilliseconds * Double(tick) / 4)).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary); if tick < 4 { Spacer(minLength: 0) } } }
-            .frame(width: width, alignment: .leading)
+        ZStack {
+            ForEach(0..<tickCount, id: \.self) { tick in
+                let fraction = Double(tick) / Double(tickCount - 1)
+                Text(String(format: "%.1f ms", startMilliseconds + (durationMilliseconds * fraction)))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: width, alignment: tick == 0 ? .leading : tick == tickCount - 1 ? .trailing : .center)
+                    .offset(x: tick == 0 || tick == tickCount - 1 ? 0 : width * (fraction - 0.5))
+            }
+        }
+        .frame(width: width, alignment: .leading)
     }
 }
 
@@ -986,6 +1094,10 @@ private struct SpanInspector: View {
     let traceStart: Date?
     let parentSpan: CollectorState.TraceItem?
     let blockedBySpan: CollectorState.TraceItem?
+    let descendantSpans: [CollectorState.TraceItem]
+    let traceSpanCount: Int
+    @Binding var selectedSpanID: CollectorState.TraceItem.ID?
+    @Binding var hoveredSpanID: CollectorState.TraceItem.ID?
     let selectParent: (CollectorState.TraceItem) -> Void
     let setHoveredSpan: (CollectorState.TraceItem.ID?) -> Void
     let setParentLinkTarget: (CollectorState.TraceItem.ID?) -> Void
@@ -1127,6 +1239,8 @@ private struct SpanInspector: View {
                                     }
                                 }
                             }
+
+                            descendantSpansSection
                         }
 
                         if !span.attributes.isEmpty {
@@ -1179,6 +1293,45 @@ private struct SpanInspector: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var descendantSpansSection: some View {
+        if !descendantSpans.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Descendant spans")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if descendantSpans.count * 2 > traceSpanCount {
+                    Text("This span has too many descendants to display here")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    let timeline = DescendantTimeline(
+                        spans: descendantSpans,
+                        traceStart: traceStart ?? descendantSpans[0].time
+                    )
+                    TraceWaterfall(
+                        spans: descendantSpans,
+                        selectedSpanID: $selectedSpanID,
+                        hoveredSpanID: $hoveredSpanID,
+                        parentLinkTargetSpanID: nil,
+                        blockedByLinkTargetSpanID: nil,
+                        showsSpanLabels: false,
+                        showsTimelineGrid: false,
+                        // Crop the compact view to the descendant interval, but
+                        // retain its trace-relative position in the ruler.
+                        timelineStart: timeline.start,
+                        timelineEnd: timeline.end,
+                        timelineLeadingPadding: 2,
+                        displayedTimelineStartMilliseconds: timeline.traceRelativeStartMilliseconds,
+                        timelineTickCount: 3,
+                        descendantTimeline: timeline
+                    )
+                    .frame(height: min(160, CGFloat(descendantSpans.count * 22 + 30)))
+                }
+            }
+        }
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {

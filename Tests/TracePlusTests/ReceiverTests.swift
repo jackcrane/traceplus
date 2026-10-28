@@ -3,6 +3,44 @@ import XCTest
 @testable import TracePlus
 
 @MainActor final class ReceiverTests: XCTestCase {
+    func testDescendantWaterfallAcceptanceLayout() {
+        let traceStart = Date(timeIntervalSinceReferenceDate: 0)
+        func span(_ id: String, startMilliseconds: Double, durationMilliseconds: Double) -> CollectorState.TraceItem {
+            CollectorState.TraceItem(
+                time: traceStart.addingTimeInterval(startMilliseconds / 1_000),
+                name: id,
+                traceID: "trace",
+                spanID: id,
+                parentSpanID: nil,
+                service: "service",
+                attributes: [:],
+                events: [],
+                durationMilliseconds: durationMilliseconds,
+                statusCode: 0
+            )
+        }
+
+        let firstChild = span("first", startMilliseconds: 164, durationMilliseconds: 108)
+        let nestedDescendant = span("nested", startMilliseconds: 171, durationMilliseconds: 57)
+        let lastDescendant = span("last", startMilliseconds: 232, durationMilliseconds: 29)
+        let timeline = DescendantTimeline(
+            spans: [firstChild, nestedDescendant, lastDescendant],
+            traceStart: traceStart
+        )
+
+        XCTAssertEqual(timeline.start, firstChild.time)
+        XCTAssertEqual(timeline.end, firstChild.time.addingTimeInterval(0.108))
+        XCTAssertEqual(timeline.traceRelativeStartMilliseconds, 164, accuracy: 0.001)
+
+        // The compact panel is +164 to +272 ms. The nested span must be seven
+        // milliseconds into that range, not 32 ms into it (+196 ms).
+        let renderedStart = timeline.traceRelativeStartMilliseconds
+            + timeline.position(for: nestedDescendant) * timeline.end.timeIntervalSince(timeline.start) * 1_000
+        XCTAssertEqual(renderedStart, 171, accuracy: 0.001)
+        XCTAssertEqual(timeline.position(for: nestedDescendant), 7.0 / 108.0, accuracy: 0.000_001)
+        XCTAssertEqual(432 * timeline.position(for: nestedDescendant), 28, accuracy: 0.001)
+    }
+
     func testReceiverProcessesOTLPTracePayload() throws {
         let collector = CollectorState(httpPort: 52123)
         let spans: [[String: Any]] = (0..<100).map { index in
