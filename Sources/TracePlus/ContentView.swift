@@ -33,35 +33,43 @@ struct ContentView: View {
                 Label(destination.rawValue, systemImage: destination.icon)
                     .tag(destination)
             }
-            .navigationTitle("TracePlus")
             .listStyle(.sidebar)
         } detail: {
-            switch selection ?? .overview {
-            case .overview: OverviewView()
-            case .traces: TracesView()
-            case .logs: LogsView()
-            case .metrics: MetricsView()
-            }
-        }
-        .toolbar {
-            if selection == .overview {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(collector.status == .running ? "Stop receiver" : "Start receiver") {
-                        collector.status == .running ? collector.stop() : collector.start()
-                    }
-                    .keyboardShortcut("r", modifiers: [.command])
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button(commandPressed ? "Open Telemetry Fountain" : "Run realistic workload", systemImage: commandPressed ? "drop.fill" : "bolt.fill") {
-                        if NSEvent.modifierFlags.contains(.command) {
-                            openWindow(id: "emitter")
-                        } else if !emitter.isSending {
-                            emitter.sendRealisticWorkload()
+            VStack(spacing: 0) {
+                if selection == .overview {
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button(collector.status == .running ? "Stop receiver" : "Start receiver") {
+                            collector.status == .running ? collector.stop() : collector.start()
                         }
+                        .keyboardShortcut("r", modifiers: [.command])
+
+                        Button(commandPressed ? "Open Telemetry Fountain" : "Run realistic workload", systemImage: commandPressed ? "drop.fill" : "bolt.fill") {
+                            if NSEvent.modifierFlags.contains(.command) {
+                                openWindow(id: "emitter")
+                            } else if !emitter.isSending {
+                                emitter.sendRealisticWorkload()
+                            }
+                        }
+                        .help(commandPressed ? "Open Telemetry Fountain" : "Send a 2,500-span realistic workload. Hold Command to open Telemetry Fountain.")
                     }
-                    .help(commandPressed ? "Open Telemetry Fountain" : "Send a 2,500-span realistic workload. Hold Command to open Telemetry Fountain.")
+                    .padding(.horizontal, 16)
+                    .frame(height: 52)
+                    Divider()
+                } else if let selection {
+                    PageHeader(title: selection.rawValue)
+                }
+
+                switch selection ?? .overview {
+                case .overview: OverviewView()
+                case .traces: TracesView()
+                case .logs: LogsView()
+                case .metrics: MetricsView()
                 }
             }
+            // The hidden title bar still reserves its top safe area after the
+            // native toolbar is removed. Let our header occupy that space.
+            .ignoresSafeArea(edges: .top)
         }
         .onAppear {
             modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
@@ -74,6 +82,20 @@ struct ContentView: View {
             modifierMonitor = nil
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct PageHeader: View {
+    let title: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.title2.weight(.semibold))
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 52)
     }
 }
 
@@ -104,7 +126,6 @@ private struct OverviewView: View {
             }
             .padding(32)
         }
-        .navigationTitle("Overview")
     }
 }
 
@@ -262,62 +283,65 @@ private struct TracesView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            Group {
-                if selection != nil {
-                    HSplitView {
-                        traceContent(height: proxy.size.height)
-                            .frame(minWidth: 0, minHeight: 0)
-                        Group {
-                            if let selectedSpan {
-                                SpanInspector(
-                                    span: selectedSpan,
-                                    traceStart: selectedTrace.first?.time,
-                                    parentSpan: selectedTrace.first { $0.spanID == selectedSpan.parentSpanID },
-                                    blockedBySpan: blockedBySpan,
-                                    descendantSpans: selectedSpanDescendants,
-                                    traceSpanCount: selectedTrace.count,
-                                    selectedSpanID: $selectedSpanID,
-                                    hoveredSpanID: $hoveredSpanID,
-                                    selectParent: { parent in selectedSpanID = parent.id },
-                                    setHoveredSpan: { hoveredSpanID = $0 },
-                                    setParentLinkTarget: { parentLinkTargetSpanID = $0 },
-                                    setBlockedByLinkTarget: { blockedByLinkTargetSpanID = $0 }
-                                )
-                            } else {
-                                Color.clear.frame(width: 0)
-                            }
-                        }
-                            .frame(minWidth: 0, idealWidth: selectedSpan == nil ? 0 : 300, minHeight: 0)
-                            .background(NativeSplitPositionDriver(trailingFraction: selectedSpan == nil ? 0 : 0.25))
-                            .background(PaneSizeObserver { size in
-                                if selectedSpanID != nil, !inspectorIsOpening, size.width < 30 { selectedSpanID = nil }
-                            })
-                    }
-                    .overlayPreferenceValue(DescendantTooltipAnchorPreference.self) { tooltip in
-                        GeometryReader { overlayProxy in
-                            if let tooltip {
-                                let spanRect = overlayProxy[tooltip.anchor]
-                                let tooltipWidth = DescendantSpanTooltip.width(for: tooltip.name)
-
-                                DescendantSpanTooltip(name: tooltip.name)
-                                    .frame(width: tooltipWidth, height: 24)
-                                    // The right chevron tip lands on the
-                                    // hovered descendant's leading edge.
-                                    .position(
-                                        x: spanRect.minX - (tooltipWidth / 2),
-                                        y: spanRect.midY
+        VStack(spacing: 0) {
+            Divider()
+            GeometryReader { proxy in
+                Group {
+                    if selection != nil {
+                        HSplitView {
+                            traceContent(height: proxy.size.height)
+                                .frame(minWidth: 0, minHeight: 0)
+                            Group {
+                                if let selectedSpan {
+                                    SpanInspector(
+                                        span: selectedSpan,
+                                        traceStart: selectedTrace.first?.time,
+                                        parentSpan: selectedTrace.first { $0.spanID == selectedSpan.parentSpanID },
+                                        blockedBySpan: blockedBySpan,
+                                        descendantSpans: selectedSpanDescendants,
+                                        traceSpanCount: selectedTrace.count,
+                                        selectedSpanID: $selectedSpanID,
+                                        hoveredSpanID: $hoveredSpanID,
+                                        selectParent: { parent in selectedSpanID = parent.id },
+                                        setHoveredSpan: { hoveredSpanID = $0 },
+                                        setParentLinkTarget: { parentLinkTargetSpanID = $0 },
+                                        setBlockedByLinkTarget: { blockedByLinkTargetSpanID = $0 }
                                     )
-                                    .allowsHitTesting(false)
-                                    .zIndex(1)
+                                } else {
+                                    Color.clear.frame(width: 0)
+                                }
+                            }
+                                .frame(minWidth: 0, idealWidth: selectedSpan == nil ? 0 : 300, minHeight: 0)
+                                .background(NativeSplitPositionDriver(trailingFraction: selectedSpan == nil ? 0 : 0.25))
+                                .background(PaneSizeObserver { size in
+                                    if selectedSpanID != nil, !inspectorIsOpening, size.width < 30 { selectedSpanID = nil }
+                                })
+                        }
+                        .overlayPreferenceValue(DescendantTooltipAnchorPreference.self) { tooltip in
+                            GeometryReader { overlayProxy in
+                                if let tooltip {
+                                    let spanRect = overlayProxy[tooltip.anchor]
+                                    let tooltipWidth = DescendantSpanTooltip.width(for: tooltip.name)
+
+                                    DescendantSpanTooltip(name: tooltip.name)
+                                        .frame(width: tooltipWidth, height: 24)
+                                        // The right chevron tip lands on the
+                                        // hovered descendant's leading edge.
+                                        .position(
+                                            x: spanRect.minX - (tooltipWidth / 2),
+                                            y: spanRect.midY
+                                        )
+                                        .allowsHitTesting(false)
+                                        .zIndex(1)
+                                }
                             }
                         }
+                    } else {
+                        traceContent(height: proxy.size.height)
                     }
-                } else {
-                    traceContent(height: proxy.size.height)
                 }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
         .onChange(of: selection) { oldValue, newValue in
             selectedSpanID = nil
@@ -337,7 +361,6 @@ private struct TracesView: View {
                 inspectorIsOpening = false
             }
         }
-        .navigationTitle("Traces")
     }
 
     @ViewBuilder
@@ -1455,17 +1478,23 @@ private struct SpanInspector: View {
 private struct LogsView: View {
     @Environment(CollectorState.self) private var collector
     var body: some View {
-        List(collector.logs) { log in
-            VStack(alignment: .leading, spacing: 5) { HStack { Text(log.severity).font(.caption.weight(.bold)).foregroundStyle(.orange); Text(log.message).font(.headline); Spacer() }; Text("\(log.service)  ·  \(log.time.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 4)
-        }.overlay { if collector.logs.isEmpty { ContentUnavailableView("No logs yet", systemImage: "text.alignleft", description: Text("Send a log to the local receiver.")) } }.navigationTitle("Logs")
+        VStack(spacing: 0) {
+            Divider()
+            List(collector.logs) { log in
+                VStack(alignment: .leading, spacing: 5) { HStack { Text(log.severity).font(.caption.weight(.bold)).foregroundStyle(.orange); Text(log.message).font(.headline); Spacer() }; Text("\(log.service)  ·  \(log.time.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 4)
+            }.overlay { if collector.logs.isEmpty { ContentUnavailableView("No logs yet", systemImage: "text.alignleft", description: Text("Send a log to the local receiver.")) } }
+        }
     }
 }
 
 private struct MetricsView: View {
     @Environment(CollectorState.self) private var collector
     var body: some View {
-        List(collector.metrics) { metric in
-            HStack { VStack(alignment: .leading, spacing: 5) { Text(metric.name).font(.headline); Text("\(metric.service)  ·  \(metric.time.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text("\(metric.value.formatted()) \(metric.unit)").monospacedDigit().font(.title3) }.padding(.vertical, 4)
-        }.overlay { if collector.metrics.isEmpty { ContentUnavailableView("No metrics yet", systemImage: "chart.xyaxis.line", description: Text("Send a metric to the local receiver.")) } }.navigationTitle("Metrics")
+        VStack(spacing: 0) {
+            Divider()
+            List(collector.metrics) { metric in
+                HStack { VStack(alignment: .leading, spacing: 5) { Text(metric.name).font(.headline); Text("\(metric.service)  ·  \(metric.time.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text("\(metric.value.formatted()) \(metric.unit)").monospacedDigit().font(.title3) }.padding(.vertical, 4)
+            }.overlay { if collector.metrics.isEmpty { ContentUnavailableView("No metrics yet", systemImage: "chart.xyaxis.line", description: Text("Send a metric to the local receiver.")) } }
+        }
     }
 }
