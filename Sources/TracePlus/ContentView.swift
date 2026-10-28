@@ -196,6 +196,7 @@ private struct TracesView: View {
     @State private var selectedSpanID: CollectorState.TraceItem.ID?
     @State private var hoveredSpanID: CollectorState.TraceItem.ID?
     @State private var parentLinkTargetSpanID: CollectorState.TraceItem.ID?
+    @State private var blockedByLinkTargetSpanID: CollectorState.TraceItem.ID?
     @State private var inspectorIsOpening = false
     @State private var waterfallIsOpening = false
     @State private var sortOrder: [KeyPathComparator<TraceSummary>] = [KeyPathComparator(\.start, order: .reverse)]
@@ -216,6 +217,27 @@ private struct TracesView: View {
     private var selectedSpan: CollectorState.TraceItem? {
         selectedTrace.first { $0.id == selectedSpanID }
     }
+    private var blockedBySpan: CollectorState.TraceItem? {
+        guard let selectedSpan,
+              let parentSpanID = selectedSpan.parentSpanID,
+              let selectedIndex = selectedTrace.firstIndex(where: { $0.id == selectedSpan.id }),
+              let parentIndex = selectedTrace.firstIndex(where: { $0.spanID == parentSpanID }),
+              selectedIndex - parentIndex > 1 else {
+            return nil
+        }
+
+        return selectedTrace
+            .filter { candidate in
+                candidate.id != selectedSpan.id &&
+                    candidate.parentSpanID == selectedSpan.parentSpanID &&
+                    candidate.time.addingTimeInterval(candidate.durationMilliseconds / 1_000) < selectedSpan.time &&
+                    selectedSpan.time.timeIntervalSince(candidate.time.addingTimeInterval(candidate.durationMilliseconds / 1_000)) <= 0.010
+            }
+            .max { lhs, rhs in
+                lhs.time.addingTimeInterval(lhs.durationMilliseconds / 1_000) <
+                    rhs.time.addingTimeInterval(rhs.durationMilliseconds / 1_000)
+            }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -230,9 +252,11 @@ private struct TracesView: View {
                                     span: selectedSpan,
                                     traceStart: selectedTrace.first?.time,
                                     parentSpan: selectedTrace.first { $0.spanID == selectedSpan.parentSpanID },
+                                    blockedBySpan: blockedBySpan,
                                     selectParent: { parent in selectedSpanID = parent.id },
                                     setHoveredSpan: { hoveredSpanID = $0 },
-                                    setParentLinkTarget: { parentLinkTargetSpanID = $0 }
+                                    setParentLinkTarget: { parentLinkTargetSpanID = $0 },
+                                    setBlockedByLinkTarget: { blockedByLinkTargetSpanID = $0 }
                                 )
                             } else {
                                 Color.clear.frame(width: 0)
@@ -254,6 +278,7 @@ private struct TracesView: View {
             selectedSpanID = nil
             hoveredSpanID = nil
             parentLinkTargetSpanID = nil
+            blockedByLinkTargetSpanID = nil
             guard oldValue == nil, newValue != nil else { return }
             waterfallIsOpening = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -281,7 +306,8 @@ private struct TracesView: View {
                     spans: selectedTrace,
                     selectedSpanID: $selectedSpanID,
                     hoveredSpanID: $hoveredSpanID,
-                    parentLinkTargetSpanID: parentLinkTargetSpanID
+                    parentLinkTargetSpanID: parentLinkTargetSpanID,
+                    blockedByLinkTargetSpanID: blockedByLinkTargetSpanID
                 )
                     .frame(minWidth: 0, minHeight: 0)
                 } else {
@@ -371,6 +397,7 @@ private struct TraceWaterfall: View {
     @Binding var selectedSpanID: CollectorState.TraceItem.ID?
     @Binding var hoveredSpanID: CollectorState.TraceItem.ID?
     let parentLinkTargetSpanID: CollectorState.TraceItem.ID?
+    let blockedByLinkTargetSpanID: CollectorState.TraceItem.ID?
     private var start: Date { spans.map(\.time).min() ?? .now }
     private var end: Date { spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start.addingTimeInterval(0.001) }
     /// Reserve only the room needed by the widest span name. This keeps the
@@ -435,7 +462,8 @@ private struct TraceWaterfall: View {
                                                 spanStartX: offset,
                                                 spanEndX: spanEndOffset,
                                                 timelineWidth: timelineWidth,
-                                                isVisible: hoveredSpanID == span.id
+                                                isVisible: hoveredSpanID == span.id || selectedSpanID == span.id,
+                                                endLabelPadding: endLabelPadding(for: span, timelineWidth: timelineWidth, duration: duration)
                                             )
                                         }.frame(height: 18)
                                     }
@@ -451,6 +479,7 @@ private struct TraceWaterfall: View {
                                     }
 
                                     relationshipArrow(timelineWidth: timelineWidth, duration: duration)
+                                    blockedByArrow(timelineWidth: timelineWidth, duration: duration)
                                 }
                                 .frame(minHeight: CGFloat(spans.count * 22))
                                 .frame(width: viewport.size.width)
@@ -490,6 +519,54 @@ private struct TraceWaterfall: View {
         }
     }
 
+    @ViewBuilder
+    private func blockedByArrow(timelineWidth: CGFloat, duration: TimeInterval) -> some View {
+        if let selectedSpanID,
+           let blockedByLinkTargetSpanID,
+           let selectedIndex = spans.firstIndex(where: { $0.id == selectedSpanID }),
+           let blockedByIndex = spans.firstIndex(where: { $0.id == blockedByLinkTargetSpanID }) {
+            let selectedSpan = spans[selectedIndex]
+            let blockingSpan = spans[blockedByIndex]
+            let selectedOffset = max(0, timelineWidth * selectedSpan.time.timeIntervalSince(start) / duration)
+            let selectedWidth = max(3, timelineWidth * (selectedSpan.durationMilliseconds / 1_000) / duration)
+            let blockingOffset = max(0, timelineWidth * blockingSpan.time.timeIntervalSince(start) / duration)
+            let blockingWidth = max(3, timelineWidth * (blockingSpan.durationMilliseconds / 1_000) / duration)
+            let turnRadius: CGFloat = 6
+            let arrowEndX = blockingOffset + blockingWidth + 5
+            let startPoint = CGPoint(
+                x: labelWidth + 8 + selectedOffset + (selectedWidth / 2),
+                y: CGFloat(selectedIndex * 22) - 5
+            )
+            let endPoint = CGPoint(
+                x: labelWidth + 8 + arrowEndX,
+                y: CGFloat(blockedByIndex * 22) + 11
+            )
+
+            BlockingSpanArrow(start: startPoint, end: endPoint, turnRadius: turnRadius)
+                .stroke(Color.gray.opacity(0.65), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func endLabelPadding(for span: CollectorState.TraceItem, timelineWidth: CGFloat, duration: TimeInterval) -> CGFloat {
+        guard span.id == blockedByLinkTargetSpanID,
+              let selectedSpanID,
+              let selectedSpan = spans.first(where: { $0.id == selectedSpanID }) else {
+            return 4
+        }
+
+        let selectedOffset = max(0, timelineWidth * selectedSpan.time.timeIntervalSince(start) / duration)
+        let selectedWidth = max(3, timelineWidth * (selectedSpan.durationMilliseconds / 1_000) / duration)
+        let blockingOffset = max(0, timelineWidth * span.time.timeIntervalSince(start) / duration)
+        let blockingWidth = max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
+        let blockingEnd = blockingOffset + blockingWidth
+        let arrowRightEdge = selectedOffset + (selectedWidth / 2)
+
+        // Keep the annotation beyond the routed arrow's vertical leg, which
+        // is the arrow's rightmost point.
+        return max(4, arrowRightEdge - blockingEnd + 8)
+    }
+
 }
 
 private struct RelationshipArrow: Shape {
@@ -500,10 +577,74 @@ private struct RelationshipArrow: Shape {
         var path = Path()
         path.move(to: start)
         path.addLine(to: end)
-        path.move(to: CGPoint(x: end.x - 5, y: end.y + 7))
+        path.move(to: CGPoint(x: end.x - 3.5, y: end.y + 4.9))
         path.addLine(to: end)
-        path.addLine(to: CGPoint(x: end.x + 5, y: end.y + 7))
+        path.addLine(to: CGPoint(x: end.x + 3.5, y: end.y + 4.9))
         return path
+    }
+}
+
+private struct BlockingSpanArrow: Shape {
+    let start: CGPoint
+    let end: CGPoint
+    let turnRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let bendStart = CGPoint(x: start.x, y: end.y + turnRadius)
+        let bendEnd = CGPoint(x: start.x - turnRadius, y: end.y)
+        let controlOffset = turnRadius * 0.552_284_75
+        let control1 = CGPoint(x: bendStart.x, y: bendStart.y - controlOffset)
+        let control2 = CGPoint(x: bendEnd.x + controlOffset, y: bendEnd.y)
+        var path = Path()
+        path.move(to: start)
+        path.addLine(to: bendStart)
+
+        if bendEnd.x >= end.x {
+            path.addCurve(to: bendEnd, control1: control1, control2: control2)
+            path.addLine(to: end)
+        } else if bendStart.x > end.x {
+            // The turn would pass the terminator. Draw only the portion of
+            // the Bézier curve before it reaches the terminator's x-position.
+            let clippedCurve = curveClipped(atX: end.x, from: bendStart, control1: control1, control2: control2, to: bendEnd)
+            path.addCurve(to: clippedCurve.end, control1: clippedCurve.control1, control2: clippedCurve.control2)
+        }
+
+        path.move(to: CGPoint(x: end.x, y: end.y - 3.5))
+        path.addLine(to: CGPoint(x: end.x, y: end.y + 3.5))
+        return path
+    }
+
+    private func curveClipped(atX x: CGFloat, from start: CGPoint, control1: CGPoint, control2: CGPoint, to end: CGPoint) -> (control1: CGPoint, control2: CGPoint, end: CGPoint) {
+        var lower: CGFloat = 0
+        var upper: CGFloat = 1
+        for _ in 0..<16 {
+            let midpoint = (lower + upper) / 2
+            if cubicPoint(at: midpoint, start: start, control1: control1, control2: control2, end: end).x > x {
+                lower = midpoint
+            } else {
+                upper = midpoint
+            }
+        }
+
+        let t = (lower + upper) / 2
+        let first = interpolate(start, control1, t)
+        let second = interpolate(control1, control2, t)
+        let third = interpolate(control2, end, t)
+        let fourth = interpolate(first, second, t)
+        let fifth = interpolate(second, third, t)
+        let clippedEnd = interpolate(fourth, fifth, t)
+        return (first, fourth, CGPoint(x: x, y: clippedEnd.y))
+    }
+
+    private func cubicPoint(at t: CGFloat, start: CGPoint, control1: CGPoint, control2: CGPoint, end: CGPoint) -> CGPoint {
+        let first = interpolate(start, control1, t)
+        let second = interpolate(control1, control2, t)
+        let third = interpolate(control2, end, t)
+        return interpolate(interpolate(first, second, t), interpolate(second, third, t), t)
+    }
+
+    private func interpolate(_ first: CGPoint, _ second: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: first.x + ((second.x - first.x) * t), y: first.y + ((second.y - first.y) * t))
     }
 }
 
@@ -514,56 +655,99 @@ private struct WaterfallTimingAnnotations: View {
     let spanEndX: CGFloat
     let timelineWidth: CGFloat
     let isVisible: Bool
+    let endLabelPadding: CGFloat
 
     private let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
     private let spanPadding: CGFloat = 4
+    private let iconWidth: CGFloat = 11
+    private let iconSpacing: CGFloat = 2
+    private let iconPadding: CGFloat = 4
+
+    private struct LabelVariant {
+        let text: String?
+        let includesIcon: Bool
+        let width: CGFloat
+    }
 
     var body: some View {
-        let startLabel = String(format: "+%.2f ms", startMilliseconds)
-        let endLabel = String(format: "+%.2f ms", endMilliseconds)
-        let durationLabel = String(format: "%.2f ms", endMilliseconds - startMilliseconds)
-        // Reserve enough room for the timestamp, SF Symbol, and their spacing
-        // before deciding whether an annotation can fit beside a span.
-        let timestampWidth = max(
-            (startLabel as NSString).size(withAttributes: [.font: font]).width,
-            (endLabel as NSString).size(withAttributes: [.font: font]).width
+        let startVariant = outsideLabel(
+            milliseconds: startMilliseconds,
+            availableWidth: spanStartX - spanPadding
         )
-        let annotationWidth = ceil(timestampWidth) + 17
-        let durationWidth = ceil((durationLabel as NSString).size(withAttributes: [.font: font]).width) + 24
+        let endVariant = outsideLabel(
+            milliseconds: endMilliseconds,
+            availableWidth: timelineWidth - spanEndX - endLabelPadding
+        )
+        let durationVariant = durationLabel(
+            milliseconds: endMilliseconds - startMilliseconds,
+            availableWidth: spanEndX - spanStartX - (spanPadding * 2)
+        )
 
-        if isVisible, spanStartX >= annotationWidth + spanPadding {
+        if isVisible, let startVariant {
             HStack(spacing: 2) {
-                Text(startLabel)
-                Image(systemName: "arrow.right.to.line")
+                if let text = startVariant.text { Text(text) }
+                if startVariant.includesIcon { Image(systemName: "arrow.right.to.line") }
             }
             .font(.system(size: 9, design: .monospaced))
             .foregroundStyle(.secondary)
-            .frame(width: annotationWidth, alignment: .trailing)
-            .offset(x: spanStartX - spanPadding - annotationWidth)
+            .frame(width: startVariant.width, alignment: .trailing)
+            .offset(x: spanStartX - spanPadding - startVariant.width)
         }
 
-        if isVisible, timelineWidth - spanEndX >= annotationWidth + spanPadding {
+        if isVisible, let endVariant {
             HStack(spacing: 2) {
-                Image(systemName: "arrow.left.to.line")
-                Text(endLabel)
+                if endVariant.includesIcon { Image(systemName: "arrow.left.to.line") }
+                if let text = endVariant.text { Text(text) }
             }
             .font(.system(size: 9, design: .monospaced))
             .foregroundStyle(.secondary)
-            .frame(width: annotationWidth, alignment: .leading)
-            .offset(x: spanEndX + spanPadding)
+            .frame(width: endVariant.width, alignment: .leading)
+            .offset(x: spanEndX + endLabelPadding)
         }
 
-        if isVisible, spanEndX - spanStartX >= durationWidth + (spanPadding * 2) {
+        if isVisible, let durationVariant {
             HStack(spacing: 2) {
-                Image(systemName: "arrow.left")
-                Text(durationLabel)
-                Image(systemName: "arrow.right")
+                if durationVariant.includesIcon { Image(systemName: "arrow.left") }
+                if let text = durationVariant.text { Text(text) }
+                if durationVariant.includesIcon { Image(systemName: "arrow.right") }
             }
             .font(.system(size: 9, design: .monospaced).weight(.medium))
             .foregroundStyle(.white)
             .frame(width: spanEndX - spanStartX - (spanPadding * 2))
             .offset(x: spanStartX + spanPadding)
         }
+    }
+
+    private func outsideLabel(milliseconds: Double, availableWidth: CGFloat) -> LabelVariant? {
+        let variants: [(String?, Bool)] = [
+            (String(format: "+%.2f ms", milliseconds), true),
+            (String(format: "%.2f ms", milliseconds), true),
+            (String(format: "%.0f ms", milliseconds), true),
+            (String(format: "%.0f", milliseconds), true),
+            (nil, true)
+        ]
+        return firstFittingVariant(in: variants, availableWidth: availableWidth)
+    }
+
+    private func durationLabel(milliseconds: Double, availableWidth: CGFloat) -> LabelVariant? {
+        let variants: [(String?, Bool)] = [
+            (String(format: "%.2f ms", milliseconds), true),
+            (String(format: "%.2f ms", milliseconds), false),
+            (String(format: "%.0f ms", milliseconds), false),
+            (String(format: "%.0f", milliseconds), false)
+        ]
+        return firstFittingVariant(in: variants, availableWidth: availableWidth)
+    }
+
+    private func firstFittingVariant(in variants: [(String?, Bool)], availableWidth: CGFloat) -> LabelVariant? {
+        for (text, includesIcon) in variants {
+            let textWidth = text.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) } ?? 0
+            let width = textWidth + (includesIcon ? iconWidth + iconPadding + (text == nil ? 0 : iconSpacing) : 0)
+            if width <= availableWidth {
+                return LabelVariant(text: text, includesIcon: includesIcon, width: width)
+            }
+        }
+        return nil
     }
 }
 
@@ -691,11 +875,11 @@ private struct WaterfallBar: View {
     var body: some View {
         Button(action: select) {
             let isActive = isSelected || isHovered || hovering
+            let tint = span.statusCode == 2 ? Color(nsColor: .systemRed) : Color.accentColor
             RoundedRectangle(cornerRadius: 3)
-                .fill(isActive ? Color.accentColor : Color.accentColor.opacity(0.18))
+                .fill(isActive ? tint : tint.opacity(0.18))
                 .frame(width: width, height: isActive ? 18 : 14)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 1))
-                .shadow(color: hovering ? .accentColor.opacity(0.45) : .clear, radius: 4)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(tint, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -724,10 +908,13 @@ private struct SpanInspector: View {
     let span: CollectorState.TraceItem?
     let traceStart: Date?
     let parentSpan: CollectorState.TraceItem?
+    let blockedBySpan: CollectorState.TraceItem?
     let selectParent: (CollectorState.TraceItem) -> Void
     let setHoveredSpan: (CollectorState.TraceItem.ID?) -> Void
     let setParentLinkTarget: (CollectorState.TraceItem.ID?) -> Void
+    let setBlockedByLinkTarget: (CollectorState.TraceItem.ID?) -> Void
     @State private var isHoveringParentLink = false
+    @State private var isHoveringBlockedByLink = false
 
     var body: some View {
         Group {
@@ -742,7 +929,7 @@ private struct SpanInspector: View {
                             Spacer()
                             Label(span.statusCode == 2 ? "Error" : "OK", systemImage: span.statusCode == 2 ? "xmark.circle.fill" : "checkmark.circle.fill")
                                 .font(.subheadline)
-                                .foregroundStyle(span.statusCode == 2 ? .red : .green)
+                                .foregroundStyle(span.statusCode == 2 ? Color(nsColor: .systemRed) : .green)
                         }
                         Divider()
 
@@ -761,6 +948,7 @@ private struct SpanInspector: View {
                         Divider()
                         inspectorSection("Relationships") {
                             if let parentSpan {
+                                let tint = parentSpan.statusCode == 2 ? Color(nsColor: .systemRed) : Color.accentColor
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text("Parent Span")
                                         .font(.caption)
@@ -770,21 +958,24 @@ private struct SpanInspector: View {
                                             selectParent(parentSpan)
                                         } label: {
                                             HStack(spacing: 6) {
-                                                Text(String(format: "%.2f ms", parentSpan.durationMilliseconds))
-                                                    .font(.caption.monospaced().weight(.semibold))
+                                                Text(parentSpan.name)
+                                                    .font(.caption.weight(.semibold))
+                                                    .lineLimit(1)
+                                                    .truncationMode(.tail)
+                                                    .layoutPriority(1)
                                                 Spacer(minLength: 0)
                                                 Image(systemName: "arrow.up")
                                                     .font(.caption.weight(.bold))
                                             }
-                                            .foregroundStyle(isHoveringParentLink ? Color.white : Color.accentColor)
+                                            .foregroundStyle(isHoveringParentLink ? Color.white : tint)
                                             .padding(.horizontal, 9)
                                             .frame(height: 24)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .background(
-                                                isHoveringParentLink ? Color.accentColor : Color.accentColor.opacity(0.18),
+                                                isHoveringParentLink ? tint : tint.opacity(0.18),
                                                 in: RoundedRectangle(cornerRadius: 3)
                                             )
-                                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 1))
+                                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(tint, lineWidth: 1))
                                         }
                                         .buttonStyle(.plain)
                                         .help("Open parent span: \(parentSpan.name)")
@@ -796,6 +987,58 @@ private struct SpanInspector: View {
                                         isHoveringParentLink = isHovering
                                         setHoveredSpan(isHovering ? parentSpan.id : nil)
                                         setParentLinkTarget(isHovering ? parentSpan.id : nil)
+                                    }
+                                    .onContinuousHover { phase in
+                                        switch phase {
+                                        case .active:
+                                            NSCursor.pointingHand.set()
+                                        case .ended:
+                                            NSCursor.arrow.set()
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let blockedBySpan {
+                                let tint = blockedBySpan.statusCode == 2 ? Color(nsColor: .systemRed) : Color.accentColor
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Blocked by")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    VStack {
+                                        Button {
+                                            selectParent(blockedBySpan)
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Text(blockedBySpan.name)
+                                                    .font(.caption.weight(.semibold))
+                                                    .lineLimit(1)
+                                                    .truncationMode(.tail)
+                                                    .layoutPriority(1)
+                                                Spacer(minLength: 0)
+                                                Image(systemName: "arrow.up")
+                                                    .font(.caption.weight(.bold))
+                                            }
+                                            .foregroundStyle(isHoveringBlockedByLink ? Color.white : tint)
+                                            .padding(.horizontal, 9)
+                                            .frame(height: 24)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(
+                                                isHoveringBlockedByLink ? tint : tint.opacity(0.18),
+                                                in: RoundedRectangle(cornerRadius: 3)
+                                            )
+                                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(tint, lineWidth: 1))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Open blocking span: \(blockedBySpan.name)")
+                                    }
+                                    .padding(6)
+                                    .background(isHoveringBlockedByLink ? Color.gray.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                                    .onHover { isHovering in
+                                        isHoveringBlockedByLink = isHovering
+                                        setHoveredSpan(isHovering ? blockedBySpan.id : nil)
+                                        setBlockedByLinkTarget(isHovering ? blockedBySpan.id : nil)
                                     }
                                     .onContinuousHover { phase in
                                         switch phase {
@@ -837,6 +1080,12 @@ private struct SpanInspector: View {
                         setHoveredSpan(parentID)
                         setParentLinkTarget(parentID)
                         if parentID != nil { NSCursor.pointingHand.set() }
+                    }
+                    .onChange(of: blockedBySpan?.id) { _, blockedByID in
+                        guard isHoveringBlockedByLink else { return }
+                        setHoveredSpan(blockedByID)
+                        setBlockedByLinkTarget(blockedByID)
+                        if blockedByID != nil { NSCursor.pointingHand.set() }
                     }
                 }
             } else {
