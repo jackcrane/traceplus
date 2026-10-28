@@ -194,6 +194,8 @@ private struct TracesView: View {
     @Environment(CollectorState.self) private var collector
     @State private var selection: String?
     @State private var selectedSpanID: CollectorState.TraceItem.ID?
+    @State private var inspectorIsOpening = false
+    @State private var waterfallIsOpening = false
     @State private var sortOrder: [KeyPathComparator<TraceSummary>] = [KeyPathComparator(\.start, order: .reverse)]
 
     private var summaries: [TraceSummary] {
@@ -216,15 +218,21 @@ private struct TracesView: View {
     var body: some View {
         GeometryReader { proxy in
             Group {
-                if selectedSpan != nil {
-                    NativeSplitView(isVertical: true, trailingFraction: 0.25) {
+                if selection != nil {
+                    HSplitView {
                         traceContent(height: proxy.size.height)
                             .frame(minWidth: 0, minHeight: 0)
-                    } trailing: {
-                        SpanInspector(span: selectedSpan, traceStart: selectedTrace.first?.time)
-                            .frame(minWidth: 0, idealWidth: 300, minHeight: 0)
+                        Group {
+                            if let selectedSpan {
+                                SpanInspector(span: selectedSpan, traceStart: selectedTrace.first?.time)
+                            } else {
+                                Color.clear.frame(width: 0)
+                            }
+                        }
+                            .frame(minWidth: 0, idealWidth: selectedSpan == nil ? 0 : 300, minHeight: 0)
+                            .background(NativeSplitPositionDriver(trailingFraction: selectedSpan == nil ? 0 : 0.25))
                             .background(PaneSizeObserver { size in
-                                if size.width < 30 { selectedSpanID = nil }
+                                if selectedSpanID != nil, !inspectorIsOpening, size.width < 30 { selectedSpanID = nil }
                             })
                     }
                 } else {
@@ -235,28 +243,43 @@ private struct TracesView: View {
         }
         .onChange(of: selection) { oldValue, newValue in
             selectedSpanID = nil
+            guard oldValue == nil, newValue != nil else { return }
+            waterfallIsOpening = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                waterfallIsOpening = false
+            }
+        }
+        .onChange(of: selectedSpanID) { oldValue, newValue in
+            guard oldValue == nil, newValue != nil else { return }
+            inspectorIsOpening = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                inspectorIsOpening = false
+            }
         }
         .navigationTitle("Traces")
     }
 
     @ViewBuilder
     private func traceContent(height: CGFloat) -> some View {
-        if selection != nil {
-            NativeSplitView(isVertical: false, trailingFraction: 0.7) {
-                traceTable
-                    .frame(minWidth: 0, minHeight: 0)
-            } trailing: {
+        VSplitView {
+            traceTable
+                .frame(minWidth: 0, minHeight: 0)
+            Group {
+                if selection != nil {
                 TraceWaterfall(spans: selectedTrace, selectedSpanID: $selectedSpanID)
                     .frame(minWidth: 0, minHeight: 0)
-                    .background(PaneSizeObserver { size in
-                        if size.height < 30 {
-                            selection = nil
-                            selectedSpanID = nil
-                        }
-                    })
+                } else {
+                    Color.clear.frame(height: 0)
+                }
             }
-        } else {
-            traceTable
+            .frame(minWidth: 0, minHeight: 0, idealHeight: selection == nil ? 0 : height * 0.7)
+            .background(NativeSplitPositionDriver(trailingFraction: selection == nil ? 0 : 0.7))
+            .background(PaneSizeObserver { size in
+                if selection != nil, !waterfallIsOpening, size.height < 30 {
+                    selection = nil
+                    selectedSpanID = nil
+                }
+            })
         }
     }
 
@@ -280,69 +303,51 @@ private struct PaneSizeObserver: View {
     var body: some View {
         GeometryReader { proxy in
             Color.clear
-                .onAppear { onChange(proxy.size) }
                 .onChange(of: proxy.size) { _, size in onChange(size) }
         }
     }
 }
 
-/// A native AppKit split view whose initial divider is positioned during its
-/// first layout pass, before the view can be drawn. Subsequent resizing stays
-/// entirely under the system split view's control.
-private struct NativeSplitView<Leading: View, Trailing: View>: NSViewRepresentable {
-    let isVertical: Bool
+/// Drives an existing native split view between a collapsed detail pane and
+/// its requested width, avoiding a new split view's default half-width frame.
+private struct NativeSplitPositionDriver: NSViewRepresentable {
     let trailingFraction: CGFloat
-    let leading: Leading
-    let trailing: Trailing
 
-    init(isVertical: Bool, trailingFraction: CGFloat, @ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
-        self.isVertical = isVertical
-        self.trailingFraction = trailingFraction
-        self.leading = leading()
-        self.trailing = trailing()
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { apply(to: view, coordinator: context.coordinator) }
+        return view
     }
 
-    func makeNSView(context: Context) -> NativeSplitContainer<Leading, Trailing> {
-        NativeSplitContainer(isVertical: isVertical, trailingFraction: trailingFraction, leading: leading, trailing: trailing)
+    func updateNSView(_ view: NSView, context: Context) {
+        apply(to: view, coordinator: context.coordinator)
     }
 
-    func updateNSView(_ view: NativeSplitContainer<Leading, Trailing>, context: Context) {
-        view.leadingHost.rootView = leading
-        view.trailingHost.rootView = trailing
-    }
-}
-
-private final class NativeSplitContainer<Leading: View, Trailing: View>: NSView {
-    let splitView: NSSplitView
-    let leadingHost: NSHostingView<Leading>
-    let trailingHost: NSHostingView<Trailing>
-    private let trailingFraction: CGFloat
-    private var positioned = false
-
-    init(isVertical: Bool, trailingFraction: CGFloat, leading: Leading, trailing: Trailing) {
-        self.trailingFraction = trailingFraction
-        splitView = NSSplitView()
-        splitView.isVertical = isVertical
-        splitView.dividerStyle = .thin
-        leadingHost = NSHostingView(rootView: leading)
-        trailingHost = NSHostingView(rootView: trailing)
-        super.init(frame: .zero)
-        addSubview(splitView)
-        splitView.addSubview(leadingHost)
-        splitView.addSubview(trailingHost)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func layout() {
-        super.layout()
-        splitView.frame = bounds
-        guard !positioned else { return }
-        let dimension = splitView.isVertical ? bounds.width : bounds.height
+    private func apply(to view: NSView, coordinator: Coordinator) {
+        guard coordinator.lastFraction != trailingFraction else { return }
+        var ancestor = view.superview
+        while let current = ancestor, !(current is NSSplitView) {
+            ancestor = current.superview
+        }
+        guard let splitView = ancestor as? NSSplitView else { return }
+        let dimension = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
         guard dimension > 0 else { return }
-        splitView.setPosition(dimension * (1 - trailingFraction), ofDividerAt: 0)
-        positioned = true
+        let position = dimension * (1 - trailingFraction)
+        if coordinator.lastFraction == nil {
+            splitView.setPosition(position, ofDividerAt: 0)
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                splitView.animator().setPosition(position, ofDividerAt: 0)
+            }
+        }
+        coordinator.lastFraction = trailingFraction
     }
+
+    final class Coordinator { var lastFraction: CGFloat? }
 }
 
 private struct TraceWaterfall: View {
