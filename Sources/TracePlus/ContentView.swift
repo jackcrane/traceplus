@@ -379,7 +379,8 @@ private struct TraceWaterfall: View {
                 VStack(alignment: .leading, spacing: 12) {
                     GeometryReader { viewport in
                         let duration = max(end.timeIntervalSince(start), 0.001)
-                        let timelineWidth = max(300, viewport.size.width - labelWidth - 8)
+                        let rowTrailingPadding: CGFloat = 2
+                        let timelineWidth = max(300, viewport.size.width - labelWidth - 8 - rowTrailingPadding)
                         VStack(alignment: .leading, spacing: 0) {
                             HStack(spacing: 8) {
                                 Text("SPAN").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .trailing)
@@ -407,7 +408,7 @@ private struct TraceWaterfall: View {
                                     }
                                     .frame(height: 22)
                                     .frame(width: viewport.size.width, alignment: .leading)
-                                    .background(hoveredSpanID == span.id ? Color.gray.opacity(0.16) : .clear)
+                                    .background(selectedSpanID == span.id ? Color.gray.opacity(0.16) : hoveredSpanID == span.id ? Color.gray.opacity(0.08) : .clear)
                                     .contentShape(Rectangle())
                                     .onTapGesture { selectedSpanID = span.id }
                                     .onHover { isHovering in
@@ -422,12 +423,16 @@ private struct TraceWaterfall: View {
                         .overlay(alignment: .topLeading) {
                             if let location = timelineHoverLocation, location.x >= labelWidth + 8, location.x <= labelWidth + 8 + timelineWidth {
                                 let elapsedX = min(max(0, location.x - labelWidth - 8), timelineWidth)
+                                let elapsedLabel = String(format: "+%.2f ms", elapsedX / timelineWidth * duration * 1_000)
+                                let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+                                let labelWidth = ceil((elapsedLabel as NSString).size(withAttributes: [.font: labelFont]).width) + 10
+                                let labelX = min(location.x, max(0, viewport.size.width - labelWidth))
                                 ZStack(alignment: .topLeading) {
                                     Rectangle().fill(Color.gray.opacity(0.65)).frame(width: 1, height: viewport.size.height - 18).offset(x: location.x, y: 18)
-                                    Text(String(format: "+%.2f ms", elapsedX / timelineWidth * duration * 1_000))
+                                    Text(elapsedLabel)
                                         .font(.system(size: 10, design: .monospaced)).padding(.horizontal, 5).padding(.vertical, 3)
                                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
-                                        .offset(x: location.x, y: 4)
+                                        .offset(x: labelX, y: 4)
                                 }
                                 .allowsHitTesting(false)
                             }
