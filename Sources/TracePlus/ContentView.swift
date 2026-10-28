@@ -432,7 +432,28 @@ private struct TraceWaterfall: View {
                             .frame(height: 18)
                             .frame(width: viewport.size.width, alignment: .leading)
                             ScrollView(.vertical) {
+                                let selectedGroup = spanAndDescendants(rootSpanID: selectedSpanID)
+                                let hoveredGroup = spanAndDescendants(rootSpanID: hoveredSpanID)
+                                let groupsShareBottom = selectedSpanID != hoveredSpanID &&
+                                    lastRowIndex(in: selectedGroup) == lastRowIndex(in: hoveredGroup)
+                                let selectedBottomExtension: CGFloat = groupsShareBottom && selectedGroup.count > hoveredGroup.count ? 4 : 0
+                                let hoveredBottomExtension: CGFloat = groupsShareBottom && hoveredGroup.count > selectedGroup.count ? 4 : 0
                                 ZStack(alignment: .topLeading) {
+                                    descendantGroupBox(
+                                        groupedSpans: selectedGroup,
+                                        timelineWidth: timelineWidth,
+                                        duration: duration,
+                                        bottomExtension: selectedBottomExtension
+                                    )
+                                    if hoveredSpanID != selectedSpanID {
+                                        descendantGroupBox(
+                                            groupedSpans: hoveredGroup,
+                                            timelineWidth: timelineWidth,
+                                            duration: duration,
+                                            bottomExtension: hoveredBottomExtension
+                                        )
+                                    }
+
                                     VStack(spacing: 0) {
                                     ForEach(spans) { span in
                                     HStack(spacing: 8) {
@@ -497,6 +518,62 @@ private struct TraceWaterfall: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func descendantGroupBox(groupedSpans: [CollectorState.TraceItem], timelineWidth: CGFloat, duration: TimeInterval, bottomExtension: CGFloat) -> some View {
+        if groupedSpans.count * 2 < spans.count {
+            let spanIDs = Set(groupedSpans.map(\.id))
+            let includedIndices = spans.indices.filter { spanIDs.contains(spans[$0].id) }
+            if let firstIndex = includedIndices.min(), let lastIndex = includedIndices.max() {
+                let horizontalBounds = groupedSpans.reduce(into: (min: CGFloat.greatestFiniteMagnitude, max: CGFloat.leastNormalMagnitude)) { bounds, span in
+                    let offset = max(0, timelineWidth * span.time.timeIntervalSince(start) / duration)
+                    let width = max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
+                    bounds.min = min(bounds.min, offset)
+                    bounds.max = max(bounds.max, min(timelineWidth, offset + width))
+                }
+                let padding: CGFloat = 2
+                let x = labelWidth + 8 + horizontalBounds.min - padding
+                let y = CGFloat(firstIndex * 22) + 2 - padding
+                let width = horizontalBounds.max - horizontalBounds.min + (padding * 2)
+                let height = CGFloat((lastIndex - firstIndex) * 22) + 18 + (padding * 2) + bottomExtension
+
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+                    .frame(width: width, height: height)
+                    .offset(x: x, y: y)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func spanAndDescendants(rootSpanID: CollectorState.TraceItem.ID?) -> [CollectorState.TraceItem] {
+        guard let rootSpanID,
+              let rootSpan = spans.first(where: { $0.id == rootSpanID }) else {
+            return []
+        }
+
+        var groupedSpans = [rootSpan]
+        var includedIDs = Set([rootSpan.id])
+        var parentSpanIDs = Set([rootSpan.spanID])
+
+        while true {
+            let children = spans.filter { span in
+                !includedIDs.contains(span.id) &&
+                    span.parentSpanID.map(parentSpanIDs.contains) == true
+            }
+            guard !children.isEmpty else { break }
+            groupedSpans.append(contentsOf: children)
+            includedIDs.formUnion(children.map(\.id))
+            parentSpanIDs.formUnion(children.map(\.spanID))
+        }
+
+        return groupedSpans
+    }
+
+    private func lastRowIndex(in groupedSpans: [CollectorState.TraceItem]) -> Int? {
+        let spanIDs = Set(groupedSpans.map(\.id))
+        return spans.indices.last { spanIDs.contains(spans[$0].id) }
     }
 
     @ViewBuilder
