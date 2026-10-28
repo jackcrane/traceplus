@@ -294,6 +294,25 @@ private struct TracesView: View {
                                 if selectedSpanID != nil, !inspectorIsOpening, size.width < 30 { selectedSpanID = nil }
                             })
                     }
+                    .overlayPreferenceValue(DescendantTooltipAnchorPreference.self) { tooltip in
+                        GeometryReader { overlayProxy in
+                            if let tooltip {
+                                let spanRect = overlayProxy[tooltip.anchor]
+                                let tooltipWidth = DescendantSpanTooltip.width(for: tooltip.name)
+
+                                DescendantSpanTooltip(name: tooltip.name)
+                                    .frame(width: tooltipWidth, height: 24)
+                                    // The right chevron tip lands on the
+                                    // hovered descendant's leading edge.
+                                    .position(
+                                        x: spanRect.minX - (tooltipWidth / 2),
+                                        y: spanRect.midY
+                                    )
+                                    .allowsHitTesting(false)
+                                    .zIndex(1)
+                            }
+                        }
+                    }
                 } else {
                     traceContent(height: proxy.size.height)
                 }
@@ -341,7 +360,8 @@ private struct TracesView: View {
                     timelineLeadingPadding: 0,
                     displayedTimelineStartMilliseconds: 0,
                     timelineTickCount: 5,
-                    descendantTimeline: nil
+                    descendantTimeline: nil,
+                    showsDescendantHoverTooltip: false
                 )
                     .frame(minWidth: 0, minHeight: 0)
                 } else {
@@ -445,6 +465,19 @@ struct DescendantTimeline {
     }
 }
 
+private struct DescendantTooltipAnchor {
+    let name: String
+    let anchor: Anchor<CGRect>
+}
+
+private struct DescendantTooltipAnchorPreference: PreferenceKey {
+    static let defaultValue: DescendantTooltipAnchor? = nil
+
+    static func reduce(value: inout DescendantTooltipAnchor?, nextValue: () -> DescendantTooltipAnchor?) {
+        value = nextValue() ?? value
+    }
+}
+
 private struct TraceWaterfall: View {
     let spans: [CollectorState.TraceItem]
     @Binding var selectedSpanID: CollectorState.TraceItem.ID?
@@ -459,6 +492,7 @@ private struct TraceWaterfall: View {
     let displayedTimelineStartMilliseconds: Double
     let timelineTickCount: Int
     let descendantTimeline: DescendantTimeline?
+    let showsDescendantHoverTooltip: Bool
     private var start: Date { timelineStart ?? spans.map(\.time).min() ?? .now }
     private var end: Date { max(timelineEnd ?? spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start, start.addingTimeInterval(0.001)) }
     /// Reserve only the room needed by the widest span name. This keeps the
@@ -566,6 +600,15 @@ private struct TraceWaterfall: View {
                                                     isHovered: hoveredSpanID == span.id,
                                                     select: { selectedSpanID = span.id }
                                                 )
+                                                .anchorPreference(
+                                                    key: DescendantTooltipAnchorPreference.self,
+                                                    value: .bounds
+                                                ) { anchor in
+                                                    guard showsDescendantHoverTooltip, hoveredSpanID == span.id else {
+                                                        return nil
+                                                    }
+                                                    return DescendantTooltipAnchor(name: span.name, anchor: anchor)
+                                                }
                                                 Spacer(minLength: 0)
                                             }
                                             .frame(width: timelineWidth, alignment: .leading)
@@ -1061,6 +1104,64 @@ private struct WaterfallBar: View {
     }
 }
 
+private struct DescendantSpanTooltip: View {
+    let name: String
+
+    static func width(for name: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let textWidth = ceil((name as NSString).size(withAttributes: [.font: font]).width)
+        // Text, compact left/right padding, and the chevron point.
+        return textWidth + 8 + 6 + 8
+    }
+
+    var body: some View {
+        Text(name)
+            .font(.caption)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.leading, 8)
+            .padding(.trailing, 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(Color.white, in: DescendantTooltipChevron())
+            .overlay(DescendantTooltipChevron().stroke(.gray.opacity(0.4), lineWidth: 1))
+    }
+}
+
+private struct DescendantTooltipChevron: Shape {
+    func path(in rect: CGRect) -> Path {
+        let pointWidth = min(8, rect.width / 4)
+        let cornerRadius = min(5, rect.height / 4)
+        let tipBaseX = rect.maxX - pointWidth
+        let centerY = rect.midY
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: tipBaseX - cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: tipBaseX, y: rect.minY + cornerRadius),
+            control: CGPoint(x: tipBaseX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: centerY))
+        path.addLine(to: CGPoint(x: tipBaseX, y: rect.maxY - cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: tipBaseX - cornerRadius, y: rect.maxY),
+            control: CGPoint(x: tipBaseX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - cornerRadius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
 private struct TimelineGrid: View {
     let width: CGFloat
     var body: some View {
@@ -1326,7 +1427,8 @@ private struct SpanInspector: View {
                         timelineLeadingPadding: 2,
                         displayedTimelineStartMilliseconds: timeline.traceRelativeStartMilliseconds,
                         timelineTickCount: 3,
-                        descendantTimeline: timeline
+                        descendantTimeline: timeline,
+                        showsDescendantHoverTooltip: true
                     )
                     .frame(height: min(160, CGFloat(descendantSpans.count * 22 + 30)))
                 }
