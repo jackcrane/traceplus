@@ -493,7 +493,7 @@ private struct SpanInspector: View {
         Group {
             if let span, let traceStart {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text(span.name)
                             .font(.title3.weight(.semibold))
                             .textSelection(.enabled)
@@ -520,14 +520,13 @@ private struct SpanInspector: View {
 
                         if !span.attributes.isEmpty {
                             Divider()
-                            inspectorSection("Attributes (\(span.attributes.count))") {
+                            inspectorSection("Attributes") {
                                 ForEach(span.attributes.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(key).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                                         Text(value).font(.caption.monospaced()).textSelection(.enabled).lineLimit(3)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    if key != span.attributes.keys.sorted().last { Divider() }
                                 }
                             }
                         }
@@ -541,7 +540,7 @@ private struct SpanInspector: View {
                             }
                         }
                     }
-                    .padding(18)
+                    .padding(12)
                 }
             } else {
                 EmptyView()
@@ -552,7 +551,7 @@ private struct SpanInspector: View {
 
     @ViewBuilder
     private func inspectorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
             content()
         }
