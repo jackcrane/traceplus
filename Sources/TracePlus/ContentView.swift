@@ -194,6 +194,8 @@ private struct TracesView: View {
     @Environment(CollectorState.self) private var collector
     @State private var selection: String?
     @State private var selectedSpanID: CollectorState.TraceItem.ID?
+    @State private var inspectorSplitReady = false
+    @State private var waterfallSplitReady = false
     @State private var sortOrder: [KeyPathComparator<TraceSummary>] = [KeyPathComparator(\.start, order: .reverse)]
 
     private var summaries: [TraceSummary] {
@@ -222,11 +224,13 @@ private struct TracesView: View {
                             .frame(minWidth: 0, minHeight: 0)
                         SpanInspector(span: selectedSpan, traceStart: selectedTrace.first?.time)
                             .frame(minWidth: 0, idealWidth: 300, minHeight: 0)
-                            .background(NativeSplitInitialWidth(fraction: 0.25))
+                            .background(NativeSplitInitialWidth(fraction: 0.25) { inspectorSplitReady = true })
                             .background(PaneSizeObserver { size in
                                 if size.width < 30 { selectedSpanID = nil }
                             })
                     }
+                    .opacity(inspectorSplitReady ? 1 : 0)
+                    .transaction { $0.animation = nil }
                 } else {
                     traceContent(height: proxy.size.height)
                 }
@@ -235,6 +239,10 @@ private struct TracesView: View {
         }
         .onChange(of: selection) { oldValue, newValue in
             selectedSpanID = nil
+            if oldValue == nil, newValue != nil { waterfallSplitReady = false }
+        }
+        .onChange(of: selectedSpanID) { oldValue, newValue in
+            if oldValue == nil, newValue != nil { inspectorSplitReady = false }
         }
         .navigationTitle("Traces")
     }
@@ -249,7 +257,7 @@ private struct TracesView: View {
                 TraceWaterfall(spans: selectedTrace, selectedSpanID: $selectedSpanID)
                     .frame(minWidth: 0, minHeight: 0)
                     .frame(idealHeight: height * 0.7)
-                    .background(NativeSplitInitialWidth(fraction: 0.7))
+                    .background(NativeSplitInitialWidth(fraction: 0.7) { waterfallSplitReady = true })
                     .background(PaneSizeObserver { size in
                         if size.height < 30 {
                             selection = nil
@@ -257,6 +265,8 @@ private struct TracesView: View {
                         }
                     })
             }
+            .opacity(waterfallSplitReady ? 1 : 0)
+            .transaction { $0.animation = nil }
         } else {
             traceTable
         }
@@ -293,6 +303,7 @@ private struct PaneSizeObserver: View {
 /// then leaves all resizing to the system split view.
 private struct NativeSplitInitialWidth: NSViewRepresentable {
     let fraction: CGFloat
+    let onApplied: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -317,6 +328,7 @@ private struct NativeSplitInitialWidth: NSViewRepresentable {
         guard dimension > 0 else { return }
         splitView.setPosition(dimension * (1 - fraction), ofDividerAt: 0)
         coordinator.didApply = true
+        DispatchQueue.main.async { onApplied() }
     }
 
     final class Coordinator {
