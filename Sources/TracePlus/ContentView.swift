@@ -354,7 +354,6 @@ private struct TraceWaterfall: View {
     let spans: [CollectorState.TraceItem]
     @Binding var selectedSpanID: CollectorState.TraceItem.ID?
     @State private var hoveredSpanID: CollectorState.TraceItem.ID?
-    @State private var timelineHoverLocation: CGPoint?
     private var start: Date { spans.map(\.time).min() ?? .now }
     private var end: Date { spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start.addingTimeInterval(0.001) }
     /// Reserve only the room needed by the widest span name. This keeps the
@@ -402,8 +401,17 @@ private struct TraceWaterfall: View {
                                             let elapsedMilliseconds: Double = span.time.timeIntervalSince(start) * 1_000
                                             let offset: CGFloat = max(0, timelineWidth * elapsedMilliseconds / (duration * 1_000))
                                             let width: CGFloat = max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
+                                            let spanEndOffset = min(timelineWidth, offset + width)
                                             WaterfallBar(span: span, width: width, offsetMilliseconds: elapsedMilliseconds, isSelected: selectedSpanID == span.id, select: { selectedSpanID = span.id })
                                                 .offset(x: offset)
+                                            WaterfallTimingAnnotations(
+                                                startMilliseconds: elapsedMilliseconds,
+                                                endMilliseconds: elapsedMilliseconds + span.durationMilliseconds,
+                                                spanStartX: offset,
+                                                spanEndX: spanEndOffset,
+                                                timelineWidth: timelineWidth,
+                                                isVisible: hoveredSpanID == span.id
+                                            )
                                         }.frame(height: 18)
                                     }
                                     .frame(height: 22)
@@ -420,29 +428,13 @@ private struct TraceWaterfall: View {
                                 .frame(width: viewport.size.width)
                             }
                         }
-                        .overlay(alignment: .topLeading) {
-                            if let location = timelineHoverLocation, location.x >= labelWidth + 8, location.x <= labelWidth + 8 + timelineWidth {
-                                let elapsedX = min(max(0, location.x - labelWidth - 8), timelineWidth)
-                                let elapsedLabel = String(format: "+%.2f ms", elapsedX / timelineWidth * duration * 1_000)
-                                let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-                                let labelWidth = ceil((elapsedLabel as NSString).size(withAttributes: [.font: labelFont]).width) + 10
-                                let labelX = min(location.x, max(0, viewport.size.width - labelWidth))
-                                ZStack(alignment: .topLeading) {
-                                    Rectangle().fill(Color.gray.opacity(0.65)).frame(width: 1, height: viewport.size.height - 18).offset(x: location.x, y: 18)
-                                    Text(elapsedLabel)
-                                        .font(.system(size: 10, design: .monospaced)).padding(.horizontal, 5).padding(.vertical, 3)
-                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
-                                        .offset(x: labelX, y: 4)
-                                }
-                                .allowsHitTesting(false)
-                            }
-                        }
-                        .onContinuousHover { phase in
-                            switch phase {
-                            case .active(let location):
-                                timelineHoverLocation = (location.x >= labelWidth + 8 && location.x <= labelWidth + 8 + timelineWidth) ? location : nil
-                            case .ended: timelineHoverLocation = nil
-                            }
+                        .overlay {
+                            WaterfallCursorOverlay(
+                                timelineStartX: labelWidth + 8,
+                                timelineWidth: timelineWidth,
+                                durationMilliseconds: duration * 1_000,
+                                headerHeight: 18
+                            )
                         }
                     }
                 }
@@ -450,6 +442,178 @@ private struct TraceWaterfall: View {
         }
     }
 
+}
+
+private struct WaterfallTimingAnnotations: View {
+    let startMilliseconds: Double
+    let endMilliseconds: Double
+    let spanStartX: CGFloat
+    let spanEndX: CGFloat
+    let timelineWidth: CGFloat
+    let isVisible: Bool
+
+    private let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+    private let spanPadding: CGFloat = 4
+
+    var body: some View {
+        let startLabel = String(format: "+%.2f ms", startMilliseconds)
+        let endLabel = String(format: "+%.2f ms", endMilliseconds)
+        let durationLabel = String(format: "%.2f ms", endMilliseconds - startMilliseconds)
+        // Reserve enough room for the timestamp, SF Symbol, and their spacing
+        // before deciding whether an annotation can fit beside a span.
+        let timestampWidth = max(
+            (startLabel as NSString).size(withAttributes: [.font: font]).width,
+            (endLabel as NSString).size(withAttributes: [.font: font]).width
+        )
+        let annotationWidth = ceil(timestampWidth) + 17
+        let durationWidth = ceil((durationLabel as NSString).size(withAttributes: [.font: font]).width) + 24
+
+        if isVisible, spanStartX >= annotationWidth + spanPadding {
+            HStack(spacing: 2) {
+                Text(startLabel)
+                Image(systemName: "arrow.right.to.line")
+            }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(width: annotationWidth, alignment: .trailing)
+            .offset(x: spanStartX - spanPadding - annotationWidth)
+        }
+
+        if isVisible, timelineWidth - spanEndX >= annotationWidth + spanPadding {
+            HStack(spacing: 2) {
+                Image(systemName: "arrow.left.to.line")
+                Text(endLabel)
+            }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(width: annotationWidth, alignment: .leading)
+            .offset(x: spanEndX + spanPadding)
+        }
+
+        if isVisible, spanEndX - spanStartX >= durationWidth + (spanPadding * 2) {
+            HStack(spacing: 2) {
+                Image(systemName: "arrow.left")
+                Text(durationLabel)
+                Image(systemName: "arrow.right")
+            }
+            .font(.system(size: 9, design: .monospaced).weight(.medium))
+            .foregroundStyle(.white)
+            .frame(width: spanEndX - spanStartX - (spanPadding * 2))
+            .offset(x: spanStartX + spanPadding)
+        }
+    }
+}
+
+/// Draws the waterfall time cursor outside SwiftUI's state/update cycle so its
+/// label and vertical rule are positioned from the same mouse event.
+private struct WaterfallCursorOverlay: NSViewRepresentable {
+    let timelineStartX: CGFloat
+    let timelineWidth: CGFloat
+    let durationMilliseconds: Double
+    let headerHeight: CGFloat
+
+    func makeNSView(context: Context) -> CursorTrackingView {
+        CursorTrackingView()
+    }
+
+    func updateNSView(_ view: CursorTrackingView, context: Context) {
+        view.timelineStartX = timelineStartX
+        view.timelineWidth = timelineWidth
+        view.durationMilliseconds = durationMilliseconds
+        view.headerHeight = headerHeight
+    }
+}
+
+private final class CursorTrackingView: NSView {
+    var timelineStartX: CGFloat = 0
+    var timelineWidth: CGFloat = 0
+    var durationMilliseconds: Double = 0
+    var headerHeight: CGFloat = 18
+
+    private let cursorRule = NSView()
+    private let timeLabel = NSTextField(labelWithString: "")
+    private var trackingArea: NSTrackingArea?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        cursorRule.wantsLayer = true
+        cursorRule.layer?.backgroundColor = NSColor.gray.withAlphaComponent(0.65).cgColor
+        cursorRule.isHidden = true
+        addSubview(cursorRule)
+
+        timeLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        timeLabel.textColor = .labelColor
+        timeLabel.alignment = .center
+        timeLabel.drawsBackground = false
+        timeLabel.wantsLayer = true
+        // A layer-backed fill remains visible while the label moves rapidly;
+        // NSTextField's background drawing can be skipped during live tracking.
+        timeLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0.72, alpha: 0.72).cgColor
+        timeLabel.layer?.cornerRadius = 4
+        timeLabel.layer?.masksToBounds = true
+        timeLabel.isHidden = true
+        addSubview(timeLabel)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func updateTrackingAreas() {
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+        super.updateTrackingAreas()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+    }
+
+    override func mouseMoved(with event: NSEvent) { updateCursor(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseEntered(with event: NSEvent) { updateCursor(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { hideCursor() }
+
+    private func updateCursor(at location: NSPoint) {
+        guard timelineWidth > 0,
+              location.x >= timelineStartX,
+              location.x <= timelineStartX + timelineWidth else {
+            hideCursor()
+            return
+        }
+
+        let elapsedX = min(max(0, location.x - timelineStartX), timelineWidth)
+        let label = String(format: "+%.2f ms", elapsedX / timelineWidth * durationMilliseconds)
+        let labelWidth = ceil((label as NSString).size(withAttributes: [.font: timeLabel.font!]).width) + 10
+        let labelX = min(location.x, max(0, bounds.width - labelWidth))
+
+        // These frames are committed together for the event, keeping the rule
+        // and its value selector locked to the physical cursor position.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cursorRule.frame = NSRect(x: location.x, y: headerHeight, width: 1, height: max(0, bounds.height - headerHeight))
+        timeLabel.stringValue = label
+        timeLabel.frame = NSRect(x: labelX, y: 4, width: labelWidth, height: 17)
+        cursorRule.isHidden = false
+        timeLabel.isHidden = false
+        CATransaction.commit()
+    }
+
+    private func hideCursor() {
+        cursorRule.isHidden = true
+        timeLabel.isHidden = true
+    }
 }
 
 private struct WaterfallBar: View {
