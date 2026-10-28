@@ -436,8 +436,8 @@ private struct TraceWaterfall: View {
                                 let hoveredGroup = spanAndDescendants(rootSpanID: hoveredSpanID)
                                 let groupsShareBottom = selectedSpanID != hoveredSpanID &&
                                     lastRowIndex(in: selectedGroup) == lastRowIndex(in: hoveredGroup)
-                                let selectedBottomExtension: CGFloat = groupsShareBottom && selectedGroup.count > hoveredGroup.count ? 4 : 0
-                                let hoveredBottomExtension: CGFloat = groupsShareBottom && hoveredGroup.count > selectedGroup.count ? 4 : 0
+                                let selectedBottomExtension: CGFloat = groupsShareBottom && selectedGroup.count > hoveredGroup.count ? 3 : 0
+                                let hoveredBottomExtension: CGFloat = groupsShareBottom && hoveredGroup.count > selectedGroup.count ? 3 : 0
                                 ZStack(alignment: .topLeading) {
                                     descendantGroupBox(
                                         groupedSpans: selectedGroup,
@@ -522,7 +522,7 @@ private struct TraceWaterfall: View {
 
     @ViewBuilder
     private func descendantGroupBox(groupedSpans: [CollectorState.TraceItem], timelineWidth: CGFloat, duration: TimeInterval, bottomExtension: CGFloat) -> some View {
-        if groupedSpans.count * 2 < spans.count {
+        if groupedSpans.count > 1, groupedSpans.count * 2 < spans.count {
             let spanIDs = Set(groupedSpans.map(\.id))
             let includedIndices = spans.indices.filter { spanIDs.contains(spans[$0].id) }
             if let firstIndex = includedIndices.min(), let lastIndex = includedIndices.max() {
