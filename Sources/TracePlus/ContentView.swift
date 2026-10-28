@@ -194,6 +194,8 @@ private struct TracesView: View {
     @Environment(CollectorState.self) private var collector
     @State private var selection: String?
     @State private var selectedSpanID: CollectorState.TraceItem.ID?
+    @State private var hoveredSpanID: CollectorState.TraceItem.ID?
+    @State private var parentLinkTargetSpanID: CollectorState.TraceItem.ID?
     @State private var inspectorIsOpening = false
     @State private var waterfallIsOpening = false
     @State private var sortOrder: [KeyPathComparator<TraceSummary>] = [KeyPathComparator(\.start, order: .reverse)]
@@ -224,7 +226,14 @@ private struct TracesView: View {
                             .frame(minWidth: 0, minHeight: 0)
                         Group {
                             if let selectedSpan {
-                                SpanInspector(span: selectedSpan, traceStart: selectedTrace.first?.time)
+                                SpanInspector(
+                                    span: selectedSpan,
+                                    traceStart: selectedTrace.first?.time,
+                                    parentSpan: selectedTrace.first { $0.spanID == selectedSpan.parentSpanID },
+                                    selectParent: { parent in selectedSpanID = parent.id },
+                                    setHoveredSpan: { hoveredSpanID = $0 },
+                                    setParentLinkTarget: { parentLinkTargetSpanID = $0 }
+                                )
                             } else {
                                 Color.clear.frame(width: 0)
                             }
@@ -243,6 +252,8 @@ private struct TracesView: View {
         }
         .onChange(of: selection) { oldValue, newValue in
             selectedSpanID = nil
+            hoveredSpanID = nil
+            parentLinkTargetSpanID = nil
             guard oldValue == nil, newValue != nil else { return }
             waterfallIsOpening = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -266,7 +277,12 @@ private struct TracesView: View {
                 .frame(minWidth: 0, minHeight: 0)
             Group {
                 if selection != nil {
-                TraceWaterfall(spans: selectedTrace, selectedSpanID: $selectedSpanID)
+                TraceWaterfall(
+                    spans: selectedTrace,
+                    selectedSpanID: $selectedSpanID,
+                    hoveredSpanID: $hoveredSpanID,
+                    parentLinkTargetSpanID: parentLinkTargetSpanID
+                )
                     .frame(minWidth: 0, minHeight: 0)
                 } else {
                     Color.clear.frame(height: 0)
@@ -353,7 +369,8 @@ private struct NativeSplitPositionDriver: NSViewRepresentable {
 private struct TraceWaterfall: View {
     let spans: [CollectorState.TraceItem]
     @Binding var selectedSpanID: CollectorState.TraceItem.ID?
-    @State private var hoveredSpanID: CollectorState.TraceItem.ID?
+    @Binding var hoveredSpanID: CollectorState.TraceItem.ID?
+    let parentLinkTargetSpanID: CollectorState.TraceItem.ID?
     private var start: Date { spans.map(\.time).min() ?? .now }
     private var end: Date { spans.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start.addingTimeInterval(0.001) }
     /// Reserve only the room needed by the widest span name. This keeps the
@@ -388,8 +405,9 @@ private struct TraceWaterfall: View {
                             .frame(height: 18)
                             .frame(width: viewport.size.width, alignment: .leading)
                             ScrollView(.vertical) {
-                                VStack(spacing: 0) {
-                                ForEach(spans) { span in
+                                ZStack(alignment: .topLeading) {
+                                    VStack(spacing: 0) {
+                                    ForEach(spans) { span in
                                     HStack(spacing: 8) {
                                         Text(span.name)
                                             .font(.caption)
@@ -402,7 +420,14 @@ private struct TraceWaterfall: View {
                                             let offset: CGFloat = max(0, timelineWidth * elapsedMilliseconds / (duration * 1_000))
                                             let width: CGFloat = max(3, timelineWidth * (span.durationMilliseconds / 1_000) / duration)
                                             let spanEndOffset = min(timelineWidth, offset + width)
-                                            WaterfallBar(span: span, width: width, offsetMilliseconds: elapsedMilliseconds, isSelected: selectedSpanID == span.id, select: { selectedSpanID = span.id })
+                                            WaterfallBar(
+                                                span: span,
+                                                width: width,
+                                                offsetMilliseconds: elapsedMilliseconds,
+                                                isSelected: selectedSpanID == span.id,
+                                                isHovered: hoveredSpanID == span.id,
+                                                select: { selectedSpanID = span.id }
+                                            )
                                                 .offset(x: offset)
                                             WaterfallTimingAnnotations(
                                                 startMilliseconds: elapsedMilliseconds,
@@ -423,6 +448,9 @@ private struct TraceWaterfall: View {
                                         hoveredSpanID = isHovering ? span.id : nil
                                     }
                                 }
+                                    }
+
+                                    relationshipArrow(timelineWidth: timelineWidth, duration: duration)
                                 }
                                 .frame(minHeight: CGFloat(spans.count * 22))
                                 .frame(width: viewport.size.width)
@@ -442,6 +470,41 @@ private struct TraceWaterfall: View {
         }
     }
 
+    @ViewBuilder
+    private func relationshipArrow(timelineWidth: CGFloat, duration: TimeInterval) -> some View {
+        if let selectedSpanID,
+           let parentLinkTargetSpanID,
+           let selectedIndex = spans.firstIndex(where: { $0.id == selectedSpanID }),
+           let parentIndex = spans.firstIndex(where: { $0.id == parentLinkTargetSpanID }),
+           selectedIndex - parentIndex > 1 {
+            let selectedSpan = spans[selectedIndex]
+            let selectedOffset = max(0, timelineWidth * selectedSpan.time.timeIntervalSince(start) / duration)
+            let selectedWidth = max(3, timelineWidth * (selectedSpan.durationMilliseconds / 1_000) / duration)
+            let barCenterX = labelWidth + 8 + selectedOffset + (selectedWidth / 2)
+            let arrowStartY = CGFloat(selectedIndex * 22) - 5
+            let arrowEndY = CGFloat(parentIndex * 22) + 26
+
+            RelationshipArrow(start: CGPoint(x: barCenterX, y: arrowStartY), end: CGPoint(x: barCenterX, y: arrowEndY))
+                .stroke(Color.gray.opacity(0.65), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                .allowsHitTesting(false)
+        }
+    }
+
+}
+
+private struct RelationshipArrow: Shape {
+    let start: CGPoint
+    let end: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: start)
+        path.addLine(to: end)
+        path.move(to: CGPoint(x: end.x - 5, y: end.y + 7))
+        path.addLine(to: end)
+        path.addLine(to: CGPoint(x: end.x + 5, y: end.y + 7))
+        return path
+    }
 }
 
 private struct WaterfallTimingAnnotations: View {
@@ -621,14 +684,17 @@ private struct WaterfallBar: View {
     let width: CGFloat
     let offsetMilliseconds: Double
     let isSelected: Bool
+    let isHovered: Bool
     let select: () -> Void
     @State private var hovering = false
+
     var body: some View {
         Button(action: select) {
+            let isActive = isSelected || isHovered || hovering
             RoundedRectangle(cornerRadius: 3)
-                .fill(span.statusCode == 2 ? Color.red : Color.accentColor)
-                .frame(width: width, height: hovering || isSelected ? 18 : 14)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(isSelected ? Color.primary : Color.clear, lineWidth: 1))
+                .fill(isActive ? Color.accentColor : Color.accentColor.opacity(0.18))
+                .frame(width: width, height: isActive ? 18 : 14)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 1))
                 .shadow(color: hovering ? .accentColor.opacity(0.45) : .clear, radius: 4)
         }
         .buttonStyle(.plain)
@@ -657,6 +723,11 @@ private struct TraceRuler: View {
 private struct SpanInspector: View {
     let span: CollectorState.TraceItem?
     let traceStart: Date?
+    let parentSpan: CollectorState.TraceItem?
+    let selectParent: (CollectorState.TraceItem) -> Void
+    let setHoveredSpan: (CollectorState.TraceItem.ID?) -> Void
+    let setParentLinkTarget: (CollectorState.TraceItem.ID?) -> Void
+    @State private var isHoveringParentLink = false
 
     var body: some View {
         Group {
@@ -687,6 +758,57 @@ private struct SpanInspector: View {
                             identifierRow("Trace ID", span.traceID)
                         }
 
+                        Divider()
+                        inspectorSection("Relationships") {
+                            if let parentSpan {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Parent Span")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    VStack {
+                                        Button {
+                                            selectParent(parentSpan)
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Text(String(format: "%.2f ms", parentSpan.durationMilliseconds))
+                                                    .font(.caption.monospaced().weight(.semibold))
+                                                Spacer(minLength: 0)
+                                                Image(systemName: "arrow.up")
+                                                    .font(.caption.weight(.bold))
+                                            }
+                                            .foregroundStyle(isHoveringParentLink ? Color.white : Color.accentColor)
+                                            .padding(.horizontal, 9)
+                                            .frame(height: 24)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(
+                                                isHoveringParentLink ? Color.accentColor : Color.accentColor.opacity(0.18),
+                                                in: RoundedRectangle(cornerRadius: 3)
+                                            )
+                                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 1))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Open parent span: \(parentSpan.name)")
+                                    }
+                                    .padding(6)
+                                    .background(isHoveringParentLink ? Color.gray.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                                    .onHover { isHovering in
+                                        isHoveringParentLink = isHovering
+                                        setHoveredSpan(isHovering ? parentSpan.id : nil)
+                                        setParentLinkTarget(isHovering ? parentSpan.id : nil)
+                                    }
+                                    .onContinuousHover { phase in
+                                        switch phase {
+                                        case .active:
+                                            NSCursor.pointingHand.set()
+                                        case .ended:
+                                            NSCursor.arrow.set()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if !span.attributes.isEmpty {
                             Divider()
                             inspectorSection("Attributes") {
@@ -710,6 +832,12 @@ private struct SpanInspector: View {
                         }
                     }
                     .padding(12)
+                    .onChange(of: parentSpan?.id) { _, parentID in
+                        guard isHoveringParentLink else { return }
+                        setHoveredSpan(parentID)
+                        setParentLinkTarget(parentID)
+                        if parentID != nil { NSCursor.pointingHand.set() }
+                    }
                 }
             } else {
                 EmptyView()
