@@ -87,6 +87,18 @@ struct TracesView: View {
         var id: Self { self }
     }
 
+    private enum AttributeInput {
+        case enumeration([String])
+        case number
+        case dateTime
+        case text
+    }
+
+    private struct TraceIndex {
+        var summaries: [TraceSummary] = []
+        var attributeInputs: [String: AttributeInput] = [:]
+    }
+
     private struct TraceFilter: Identifiable, Equatable {
         let id = UUID()
         var isEnabled = true
@@ -107,9 +119,10 @@ struct TracesView: View {
     @State private var waterfallIsOpening = false
     @State private var sortOrder: [KeyPathComparator<TraceSummary>] = [KeyPathComparator(\.start, order: .reverse)]
     @State private var filters: [TraceFilter] = []
+    @State private var traceIndex = TraceIndex()
 
-    private var allSummaries: [TraceSummary] {
-        Dictionary(grouping: collector.traces, by: \.traceID).map { id, spans in
+    private func rebuildTraceIndex() {
+        let summaries = Dictionary(grouping: collector.traces, by: \.traceID).map { id, spans in
             let ordered = spans.sorted { $0.time < $1.time }
             let start = ordered.first?.time ?? .now
             let end = ordered.map { $0.time.addingTimeInterval($0.durationMilliseconds / 1_000) }.max() ?? start
@@ -123,12 +136,38 @@ struct TracesView: View {
             attributes = attributes.mapValues { Array(Set($0)).sorted() }
             return TraceSummary(id: id, operation: root.name, service: root.service, start: start, duration: end.timeIntervalSince(start) * 1_000, spanCount: spans.count, hasError: spans.contains { $0.statusCode == 2 }, attributes: attributes)
         }
+        var valuesByAttribute: [String: Set<String>] = [:]
+        for summary in summaries {
+            for (key, values) in summary.attributes {
+                valuesByAttribute[key, default: []].formUnion(values)
+            }
+        }
+        let inputs: [String: AttributeInput] = valuesByAttribute.mapValues { values in
+            let values = Array(values).sorted()
+            if values.count < 8 { return .enumeration(values) }
+            if values.allSatisfy({ Double($0) != nil }) { return .number }
+            if values.allSatisfy({ date(fromAttributeValue: $0) != nil }) { return .dateTime }
+            return .text
+        }
+        traceIndex = TraceIndex(summaries: summaries, attributeInputs: inputs)
     }
     private var attributeKeys: [String] {
-        Array(Set(allSummaries.flatMap { $0.attributes.keys })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        traceIndex.attributeInputs.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+    private func attributeInput(for key: String) -> AttributeInput {
+        traceIndex.attributeInputs[key] ?? .text
+    }
+    private func comparators(for field: FilterField) -> [FilterComparator] {
+        guard case .attribute(let key) = field else { return field.comparators }
+        switch attributeInput(for: key) {
+        case .enumeration: return [.equals, .isNot]
+        case .number: return [.equals, .isNot, .greaterThan, .greaterThanOrEqualTo, .lessThan, .lessThanOrEqualTo]
+        case .dateTime: return [.equals, .before, .after]
+        case .text: return field.comparators
+        }
     }
     private var summaries: [TraceSummary] {
-        allSummaries.filter { summary in
+        traceIndex.summaries.filter { summary in
             filters.filter(\.isEnabled).allSatisfy { matches($0, summary: summary) }
         }.sorted(using: sortOrder)
     }
@@ -244,6 +283,8 @@ struct TracesView: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
         }
+        .onAppear { rebuildTraceIndex() }
+        .onChange(of: collector.spanCount) { _, _ in rebuildTraceIndex() }
         .onChange(of: selection) { oldValue, newValue in
             selectedSpanID = nil
             hoveredSpanID = nil
@@ -357,13 +398,13 @@ struct TracesView: View {
                     entries: filterFieldEntries,
                     selection: filter.field,
                     onSelection: { field in
-                        filter.wrappedValue.comparator = field.comparators[0]
+                        filter.wrappedValue.comparator = comparators(for: field)[0]
                     }
                 )
                 .frame(width: widths.field, height: 22)
 
                 NativePopupPicker(
-                    entries: filter.wrappedValue.field.comparators.map { .option($0, $0.title) },
+                    entries: comparators(for: filter.wrappedValue.field).map { .option($0, $0.title) },
                     selection: filter.comparator
                 )
                 .frame(width: widths.comparator, height: 22)
@@ -406,7 +447,32 @@ struct TracesView: View {
             TextField("Number of spans", text: filter.textValue)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: width)
-        case .operation, .service, .traceID, .attribute:
+        case .attribute(let key):
+            attributeValueControl(filter: filter, key: key, width: width)
+        case .operation, .service, .traceID:
+            TextField("Value", text: filter.textValue)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: width)
+        }
+    }
+
+    @ViewBuilder
+    private func attributeValueControl(filter: Binding<TraceFilter>, key: String, width: CGFloat) -> some View {
+        switch attributeInput(for: key) {
+        case .enumeration(let values):
+            NativePopupPicker(
+                entries: values.map { .option($0, $0) },
+                selection: filter.textValue
+            )
+            .frame(width: width, height: 22)
+        case .number:
+            TextField("Number", text: filter.textValue)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: width)
+        case .dateTime:
+            NativeDatePicker(selection: filter.dateValue)
+                .frame(width: width, height: 22)
+        case .text:
             TextField("Value", text: filter.textValue)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: width)
@@ -491,7 +557,7 @@ struct TracesView: View {
         case .traceID:
             return matchesText(summary.id, comparator: filter.comparator, value: filter.textValue)
         case .attribute(let key):
-            return matchesAttribute(summary.attributes[key] ?? [], comparator: filter.comparator, value: filter.textValue)
+            return matchesAttribute(summary.attributes[key] ?? [], input: attributeInput(for: key), filter: filter)
         case .status:
             let status: TraceStatus = summary.hasError ? .error : .ok
             return filter.comparator == .equals ? status == filter.statusValue : status != filter.statusValue
@@ -523,18 +589,41 @@ struct TracesView: View {
         }
     }
 
-    private func matchesAttribute(_ values: [String], comparator: FilterComparator, value: String) -> Bool {
-        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func matchesAttribute(_ values: [String], input: AttributeInput, filter: TraceFilter) -> Bool {
+        let value = filter.textValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch input {
+        case .number:
+            guard !value.isEmpty else { return true }
+            guard let number = Double(value) else { return true }
+            return values.compactMap(Double.init).contains { matchesNumber($0, comparator: filter.comparator, value: number) }
+        case .dateTime:
+            return values.compactMap { date(fromAttributeValue: $0) }.contains { date in
+                switch filter.comparator {
+                case .equals: abs(date.timeIntervalSince(filter.dateValue)) < 1
+                case .before: date < filter.dateValue
+                case .after: date > filter.dateValue
+                default: false
+                }
+            }
+        case .enumeration, .text:
+            break
+        }
+
         guard !value.isEmpty else { return true }
 
-        switch comparator {
+        switch filter.comparator {
         case .equals, .contains:
-            return values.contains { matchesText($0, comparator: comparator, value: value) }
+            return values.contains { matchesText($0, comparator: filter.comparator, value: value) }
         case .isNot, .doesNotContain:
-            return values.allSatisfy { matchesText($0, comparator: comparator, value: value) }
+            return values.allSatisfy { matchesText($0, comparator: filter.comparator, value: value) }
         default:
             return true
         }
+    }
+
+    private func date(fromAttributeValue value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
     }
 
     private func matchesNumber(_ source: Double, comparator: FilterComparator, value: Double) -> Bool {
@@ -559,7 +648,7 @@ struct TracesView: View {
 /// A native AppKit popup button that accepts SwiftUI's assigned width instead
 /// of retaining the intrinsic width of its selected item.
 private struct NativePopupPicker<Value: Hashable>: NSViewRepresentable {
-    enum Entry {
+    enum Entry: Equatable {
         case option(Value, String)
         case separator
     }
@@ -579,13 +668,17 @@ private struct NativePopupPicker<Value: Hashable>: NSViewRepresentable {
         button.target = context.coordinator
         button.action = #selector(Coordinator.selectionChanged(_:))
         rebuild(button)
+        context.coordinator.entries = entries
         selectCurrentValue(in: button)
         return button
     }
 
     func updateNSView(_ button: NSPopUpButton, context: Context) {
         context.coordinator.parent = self
-        rebuild(button)
+        if context.coordinator.entries != entries {
+            rebuild(button)
+            context.coordinator.entries = entries
+        }
         selectCurrentValue(in: button)
     }
 
@@ -608,11 +701,14 @@ private struct NativePopupPicker<Value: Hashable>: NSViewRepresentable {
             if case .option(let value, _) = entry { return value == selection }
             return false
         }) else { return }
-        button.selectItem(withTag: index)
+        if button.selectedTag() != index {
+            button.selectItem(withTag: index)
+        }
     }
 
     @MainActor final class Coordinator: NSObject {
         var parent: NativePopupPicker
+        var entries: [Entry] = []
 
         init(_ parent: NativePopupPicker) {
             self.parent = parent
