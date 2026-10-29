@@ -27,7 +27,7 @@ struct TracesView: View {
     }
     private var selectedTrace: [CollectorState.TraceItem] {
         guard let selection else { return [] }
-        return collector.traces.filter { $0.traceID == selection }.sorted { $0.time < $1.time }
+        return TraceSpanOrdering.parentFirst(collector.traces.filter { $0.traceID == selection })
     }
     private var selectedSpan: CollectorState.TraceItem? {
         selectedTrace.first { $0.id == selectedSpanID }

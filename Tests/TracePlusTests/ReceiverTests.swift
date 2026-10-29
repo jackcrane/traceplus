@@ -41,6 +41,33 @@ import XCTest
         XCTAssertEqual(432 * timeline.position(for: nestedDescendant), 28, accuracy: 0.001)
     }
 
+    func testWaterfallOrdersParentsBeforeChildrenDespiteClockSkew() {
+        let traceStart = Date(timeIntervalSinceReferenceDate: 0)
+        func span(_ id: String, parent: String?, startMilliseconds: Double) -> CollectorState.TraceItem {
+            CollectorState.TraceItem(
+                time: traceStart.addingTimeInterval(startMilliseconds / 1_000),
+                name: id,
+                traceID: "trace",
+                spanID: id,
+                parentSpanID: parent,
+                service: "service",
+                attributes: [:],
+                events: [],
+                durationMilliseconds: 1,
+                statusCode: 0
+            )
+        }
+
+        let parent = span("parent", parent: nil, startMilliseconds: 20)
+        let earlyChild = span("early-child", parent: "parent", startMilliseconds: 5)
+        let grandchild = span("grandchild", parent: "early-child", startMilliseconds: 1)
+        let laterChild = span("later-child", parent: "parent", startMilliseconds: 10)
+
+        let ordered = TraceSpanOrdering.parentFirst([grandchild, laterChild, earlyChild, parent])
+
+        XCTAssertEqual(ordered.map(\.spanID), ["parent", "early-child", "grandchild", "later-child"])
+    }
+
     func testReceiverProcessesOTLPTracePayload() throws {
         let collector = CollectorState(httpPort: 52123)
         let spans: [[String: Any]] = (0..<100).map { index in
