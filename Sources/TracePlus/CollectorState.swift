@@ -169,6 +169,20 @@ final class CollectorState {
         status = .stopped
     }
 
+    /// Removes every signal retained by this receiver without interrupting the
+    /// active listener, so senders can continue publishing immediately.
+    func clearStoredSignals() {
+        traces.removeAll()
+        logs.removeAll()
+        metrics.removeAll()
+        receivedTraceIDs.removeAll()
+        traceCount = 0
+        spanCount = 0
+        logCount = 0
+        metricCount = 0
+        lastReceivedAt = nil
+    }
+
     private nonisolated func accept(_ connection: NWConnection) {
         connection.start(queue: listenerQueue)
         receiveNextChunk(from: connection, buffer: HTTPRequestBuffer())

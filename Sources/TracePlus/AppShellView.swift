@@ -9,7 +9,7 @@ struct AppShellView: View {
         NavigationSplitView {
             DestinationSidebar(selection: $selection)
         } detail: {
-            AppDetailView(selection: selection) { openWindow(id: "emitter") }
+            AppDetailView(selection: $selection) { openWindow(id: "emitter") }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

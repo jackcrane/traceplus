@@ -80,6 +80,28 @@ import XCTest
         XCTAssertEqual(collector.traces.count, 100)
     }
 
+    func testClearStoredSignalsRemovesAllTelemetryAndCounters() {
+        let collector = CollectorState(httpPort: 52124)
+        let trace: [String: Any] = ["traceId": "0123456789abcdef0123456789abcdef", "spanId": "0123456789abcdef", "name": "checkout", "startTimeUnixNano": "1760000000000000000", "endTimeUnixNano": "1760000000010000000"]
+        let traceBody: [String: Any] = ["resourceSpans": [["scopeSpans": [["spans": [trace]]]]]]
+        let logBody: [String: Any] = ["resourceLogs": [["scopeLogs": [["logRecords": [["body": ["stringValue": "checkout completed"]]]]]]]]
+        let metricBody: [String: Any] = ["resourceMetrics": [["scopeMetrics": [["metrics": [["name": "checkout.duration", "gauge": ["dataPoints": [["asDouble": 72.0]]]]]]]]]]
+        XCTAssertTrue(collector.processOTLPRequest(path: "/v1/traces", body: traceBody))
+        XCTAssertTrue(collector.processOTLPRequest(path: "/v1/logs", body: logBody))
+        XCTAssertTrue(collector.processOTLPRequest(path: "/v1/metrics", body: metricBody))
+
+        collector.clearStoredSignals()
+
+        XCTAssertTrue(collector.traces.isEmpty)
+        XCTAssertTrue(collector.logs.isEmpty)
+        XCTAssertTrue(collector.metrics.isEmpty)
+        XCTAssertEqual(collector.traceCount, 0)
+        XCTAssertEqual(collector.spanCount, 0)
+        XCTAssertEqual(collector.logCount, 0)
+        XCTAssertEqual(collector.metricCount, 0)
+        XCTAssertNil(collector.lastReceivedAt)
+    }
+
     func testListenerAcceptsAnInboundHTTPTraceRequest() async throws {
         let port = Int.random(in: 55_000...59_000)
         let collector = CollectorState(httpPort: port)

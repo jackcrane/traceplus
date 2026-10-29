@@ -14,15 +14,15 @@ struct DestinationSidebar: View {
 }
 
 struct AppDetailView: View {
-    let selection: AppDestination?
+    @Binding var selection: AppDestination?
     let openEmitter: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             if selection == .overview {
-                ReceiverToolbar(openEmitter: openEmitter)
+                ReceiverToolbar(openEmitter: openEmitter) { selection = .overview }
             } else if let selection {
-                PageHeader(title: selection.rawValue)
+                PageHeader(title: selection.rawValue) { self.selection = .overview }
             }
             DestinationContent(selection: selection)
         }
@@ -36,6 +36,7 @@ private struct ReceiverToolbar: View {
     @Environment(CollectorState.self) private var collector
     @Environment(TelemetryEmitter.self) private var emitter
     let openEmitter: () -> Void
+    let showOverview: () -> Void
     @State private var commandPressed = false
     @State private var modifierMonitor: Any?
 
@@ -50,6 +51,7 @@ private struct ReceiverToolbar: View {
                 commandPressed ? openEmitter() : sendWorkload()
             }
             .help(commandPressed ? "Open Telemetry Fountain" : "Send a 2,500-span realistic workload. Hold Command to open Telemetry Fountain.")
+            ClearStoredSignalsButton(showOverview: showOverview)
         }
         .padding(.horizontal, 16).frame(height: 52)
         .onAppear { installModifierMonitor() }
@@ -89,9 +91,42 @@ private struct DestinationContent: View {
 
 struct PageHeader: View {
     let title: String
+    let showOverview: () -> Void
 
     var body: some View {
-        HStack { Text(title).font(.title2.weight(.semibold)); Spacer() }
+        HStack {
+            Text(title).font(.title2.weight(.semibold))
+            Spacer()
+            ClearStoredSignalsButton(showOverview: showOverview)
+        }
             .padding(.horizontal, 16).frame(height: 52)
+    }
+}
+
+private struct ClearStoredSignalsButton: View {
+    @Environment(CollectorState.self) private var collector
+    let showOverview: () -> Void
+    @State private var showingConfirmation = false
+
+    var body: some View {
+        Button("Clear stored telemetry", systemImage: "trash") {
+            showingConfirmation = true
+        }
+        .labelStyle(.iconOnly)
+        .help("Delete all stored traces, metrics, and logs")
+        .accessibilityLabel("Delete all stored telemetry")
+        .disabled(collector.traces.isEmpty && collector.logs.isEmpty && collector.metrics.isEmpty)
+        .confirmationDialog(
+            "Delete all stored telemetry?",
+            isPresented: $showingConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                collector.clearStoredSignals()
+                showOverview()
+            }
+        } message: {
+            Text("This permanently removes all traces, metrics, and logs currently held in memory.")
+        }
     }
 }
