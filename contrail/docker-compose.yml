@@ -1,0 +1,28 @@
+# Contrail: the app (five Node services in one container) plus Postgres. No volumes: data is
+# discarded on `docker compose down`.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: contrail
+      POSTGRES_PASSWORD: contrail
+      POSTGRES_DB: contrail
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contrail -d contrail"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4400:4400"
+    environment:
+      DATABASE_URL: postgres://contrail:contrail@db:5432/contrail
+      # TracePlus listens on the host; Docker Desktop and OrbStack both resolve this name.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+      WEATHER_SOURCE: ${WEATHER_SOURCE:-auto}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

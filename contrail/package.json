@@ -1,0 +1,30 @@
+{
+  "name": "contrail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Contrail: an interactive flight-planning app made of five services and Postgres, instrumented with OpenTelemetry.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "docker": "docker compose up --build"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.300.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.300.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.300.0",
+    "@opentelemetry/instrumentation-http": "0.300.0",
+    "@opentelemetry/instrumentation-pg": "0.77.0",
+    "@opentelemetry/instrumentation-runtime-node": "0.37.0",
+    "@opentelemetry/instrumentation-undici": "0.34.0",
+    "@opentelemetry/resources": "3.0.0",
+    "@opentelemetry/sdk-logs": "3.0.0",
+    "@opentelemetry/sdk-metrics": "3.0.0",
+    "@opentelemetry/sdk-node": "0.300.0",
+    "@opentelemetry/sdk-trace": "3.0.0",
+    "@opentelemetry/semantic-conventions": "1.44.0",
+    "pg": "8.23.1"
+  }
+}

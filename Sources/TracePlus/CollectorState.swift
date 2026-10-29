@@ -24,6 +24,9 @@ final class CollectorState {
         let severity: String
         let message: String
         let service: String
+        var attributes: [String: String] = [:]
+        var traceID: String?
+        var spanID: String?
     }
     struct MetricItem: Identifiable {
         let id = UUID()
@@ -32,6 +35,9 @@ final class CollectorState {
         let value: Double
         let unit: String
         let service: String
+        /// gauge, sum, histogram or exponentialHistogram. Histograms report their mean.
+        var kind: String = "gauge"
+        var attributes: [String: String] = [:]
     }
     enum Status: String {
         case stopped = "Not running"
@@ -279,8 +285,11 @@ final class CollectorState {
             let service = serviceName(in: resource)
             for scope in dictionaries(resource["scopeLogs"]) {
                 for record in dictionaries(scope["logRecords"]) {
-                    let text = (record["body"] as? [String: Any])?["stringValue"] as? String ?? "Log record"
-                    received.append(LogItem(time: date(fromNanoseconds: numeric(record["timeUnixNano"])), severity: record["severityText"] as? String ?? "UNSPECIFIED", message: text, service: service))
+                    let text = (record["body"] as? [String: Any]).map(render) ?? "Log record"
+                    let traceID = (record["traceId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    let spanID = (record["spanId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    let time = numeric(record["timeUnixNano"]) != 0 ? numeric(record["timeUnixNano"]) : numeric(record["observedTimeUnixNano"])
+                    received.append(LogItem(time: date(fromNanoseconds: time), severity: record["severityText"] as? String ?? "UNSPECIFIED", message: text, service: service, attributes: attributeValues(record["attributes"]), traceID: traceID, spanID: spanID))
                 }
             }
         }
@@ -295,8 +304,15 @@ final class CollectorState {
             let service = serviceName(in: resource)
             for scope in dictionaries(resource["scopeMetrics"]) {
                 for metric in dictionaries(scope["metrics"]) {
-                    let points = dictionaries((metric["gauge"] as? [String: Any])?["dataPoints"])
-                    for point in points { received.append(MetricItem(time: date(fromNanoseconds: numeric(point["timeUnixNano"])), name: metric["name"] as? String ?? "metric", value: (point["asDouble"] as? Double) ?? Double(numeric(point["asInt"])), unit: metric["unit"] as? String ?? "", service: service)) }
+                    let name = metric["name"] as? String ?? "metric"
+                    let unit = metric["unit"] as? String ?? ""
+                    for kind in ["gauge", "sum", "histogram", "exponentialHistogram"] {
+                        guard let data = metric[kind] as? [String: Any] else { continue }
+                        for point in dictionaries(data["dataPoints"]) {
+                            guard let value = metricValue(point, kind: kind) else { continue }
+                            received.append(MetricItem(time: date(fromNanoseconds: numeric(point["timeUnixNano"])), name: name, value: value, unit: unit, service: service, kind: kind, attributes: attributeValues(point["attributes"])))
+                        }
+                    }
                 }
             }
         }
@@ -323,11 +339,47 @@ final class CollectorState {
     }
 
     private func attributeValues(_ value: Any?) -> [String: String] {
-        Dictionary(uniqueKeysWithValues: dictionaries(value).compactMap { attribute in
+        Dictionary(dictionaries(value).compactMap { attribute -> (String, String)? in
             guard let key = attribute["key"] as? String, let value = attribute["value"] as? [String: Any] else { return nil }
-            let rendered = value["stringValue"] as? String ?? (value["intValue"] as? String) ?? (value["boolValue"] as? Bool).map(String.init) ?? ""
-            return (key, rendered)
-        })
+            return (key, render(value))
+        }, uniquingKeysWith: { _, last in last })
+    }
+
+    /// Renders an OTLP AnyValue. JSON exporters send int64 as either a string
+    /// or a bare number, so every numeric form is accepted.
+    private func render(_ value: [String: Any]) -> String {
+        if let string = value["stringValue"] as? String { return string }
+        if let bool = value["boolValue"] as? Bool { return String(bool) }
+        if let int = value["intValue"] {
+            if let string = int as? String { return string }
+            if let number = int as? NSNumber { return String(number.int64Value) }
+        }
+        if let double = (value["doubleValue"] as? NSNumber)?.doubleValue ?? (value["doubleValue"] as? String).flatMap(Double.init) {
+            return double.formatted(.number.precision(.fractionLength(0...6)).grouping(.never))
+        }
+        if let array = (value["arrayValue"] as? [String: Any])?["values"] as? [[String: Any]] {
+            return "[" + array.map(render).joined(separator: ", ") + "]"
+        }
+        if let list = (value["kvlistValue"] as? [String: Any])?["values"] {
+            return attributeValues(list).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        }
+        if let bytes = value["bytesValue"] as? String { return bytes }
+        return ""
+    }
+
+    private func double(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    /// One representative number per data point. Histograms collapse to their mean.
+    private func metricValue(_ point: [String: Any], kind: String) -> Double? {
+        if kind == "histogram" || kind == "exponentialHistogram" {
+            guard let count = double(point["count"]), count > 0, let sum = double(point["sum"]) else { return nil }
+            return sum / count
+        }
+        return double(point["asDouble"]) ?? double(point["asInt"])
     }
 
     private func date(fromNanoseconds nanoseconds: UInt64) -> Date {

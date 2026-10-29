@@ -102,6 +102,35 @@ import XCTest
         XCTAssertNil(collector.lastReceivedAt)
     }
 
+    func testReceiverReadsNumericAttributesLogContextAndAllMetricKinds() throws {
+        let collector = CollectorState(httpPort: 52125)
+        let span: [String: Any] = ["traceId": "0123456789abcdef0123456789abcdef", "spanId": "0123456789abcdef", "name": "POST /orders", "startTimeUnixNano": "1760000000000000000", "endTimeUnixNano": "1760000000010000000",
+            "attributes": [["key": "http.response.status_code", "value": ["intValue": 201]], ["key": "app.score", "value": ["doubleValue": 0.125]], ["key": "app.hit", "value": ["boolValue": false]], ["key": "big", "value": ["intValue": "42"]], ["key": "big", "value": ["intValue": "43"]]]]
+        XCTAssertTrue(collector.processOTLPRequest(path: "/v1/traces", body: ["resourceSpans": [["scopeSpans": [["spans": [span]]]]]]))
+        let attributes = try XCTUnwrap(collector.traces.first).attributes
+        XCTAssertEqual(attributes["http.response.status_code"], "201")
+        XCTAssertEqual(attributes["app.score"], "0.125")
+        XCTAssertEqual(attributes["app.hit"], "false")
+        XCTAssertEqual(attributes["big"], "43")
+
+        let record: [String: Any] = ["timeUnixNano": "1760000000000000000", "severityText": "WARN", "body": ["stringValue": "retrying"], "traceId": "0123456789abcdef0123456789abcdef", "spanId": "0123456789abcdef", "attributes": [["key": "retry.attempt", "value": ["intValue": 2]]]]
+        collector.processOTLPRequest(path: "/v1/logs", body: ["resourceLogs": [["scopeLogs": [["logRecords": [record]]]]]])
+        let log = try XCTUnwrap(collector.logs.first)
+        XCTAssertEqual(log.attributes["retry.attempt"], "2")
+        XCTAssertEqual(log.traceID, "0123456789abcdef0123456789abcdef")
+
+        let metrics: [[String: Any]] = [
+            ["name": "orders", "unit": "{order}", "sum": ["dataPoints": [["asInt": "7", "attributes": [["key": "outcome", "value": ["stringValue": "ok"]]]]]]],
+            ["name": "latency", "unit": "s", "histogram": ["dataPoints": [["count": "4", "sum": 2.0]]]],
+            ["name": "empty", "histogram": ["dataPoints": [["count": "0", "sum": 0]]]],
+        ]
+        collector.processOTLPRequest(path: "/v1/metrics", body: ["resourceMetrics": [["scopeMetrics": [["metrics": metrics]]]]])
+        XCTAssertEqual(collector.metrics.count, 2)
+        XCTAssertEqual(collector.metrics.first { $0.name == "orders" }?.value, 7)
+        XCTAssertEqual(collector.metrics.first { $0.name == "orders" }?.attributes["outcome"], "ok")
+        XCTAssertEqual(try XCTUnwrap(collector.metrics.first { $0.name == "latency" }).value, 0.5, accuracy: 0.0001)
+    }
+
     func testListenerAcceptsAnInboundHTTPTraceRequest() async throws {
         let port = Int.random(in: 55_000...59_000)
         let collector = CollectorState(httpPort: port)

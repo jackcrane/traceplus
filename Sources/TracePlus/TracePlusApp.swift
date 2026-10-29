@@ -6,6 +6,7 @@ import TelemetryKit
 struct TracePlusApp: App {
     @State private var collector = CollectorState()
     @State private var emitter = TelemetryEmitter()
+    @State private var ramen = ContrailRunner()
 
     init() {
         // Swift Package executables are not launched by LaunchServices like an
@@ -29,7 +30,8 @@ struct TracePlusApp: App {
         WindowGroup("Telemetry Fountain", id: "emitter") {
             EmitterView()
                 .environment(emitter)
-                .frame(minWidth: 650, minHeight: 520)
+                .environment(ramen)
+                .frame(minWidth: 650, minHeight: 760)
         }
     }
 }

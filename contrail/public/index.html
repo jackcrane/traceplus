@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contrail · Flight planning</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="mark">✈</span> Contrail</div>
+    <div id="session" class="session"></div>
+  </header>
+
+  <main id="auth" class="auth hidden">
+    <form id="auth-form" class="card auth-card">
+      <h1 id="auth-title">Sign in</h1>
+      <p class="muted">Plan flights with live weather for every airport along the way.</p>
+      <label id="name-row" class="hidden">Name<input name="displayName" autocomplete="name"></label>
+      <label>Email<input name="email" type="email" required autocomplete="email"></label>
+      <label>Password<input name="password" type="password" required minlength="8" autocomplete="current-password"></label>
+      <p id="auth-error" class="error"></p>
+      <button class="primary" type="submit">Continue</button>
+      <button class="link" type="button" id="auth-toggle">Create an account</button>
+    </form>
+  </main>
+
+  <main id="app" class="layout hidden">
+    <aside class="side">
+      <form id="plan-form" class="card">
+        <h2>Plan a flight</h2>
+        <label>From<input id="origin" name="origin" placeholder="ICAO code, e.g. KSFO" autocomplete="off" list="airport-options" required></label>
+        <label>To<input id="destination" name="destination" placeholder="ICAO code, e.g. KSAN" autocomplete="off" list="airport-options" required></label>
+        <datalist id="airport-options"></datalist>
+        <div class="row">
+          <label>Aircraft<select id="aircraft" name="aircraft"></select></label>
+          <label>Cruise (ft)<input id="cruiseAltFt" name="cruiseAltFt" type="number" step="500" value="6500"></label>
+        </div>
+        <label>Departure (local)<input id="departure" name="departureTime" type="datetime-local"></label>
+        <div class="row">
+          <label>Front seats (lb)<input name="frontLb" type="number" value="340"></label>
+          <label>Rear (lb)<input name="rearLb" type="number" value="0"></label>
+          <label>Bags (lb)<input name="baggageLb" type="number" value="40"></label>
+        </div>
+        <p id="plan-error" class="error"></p>
+        <button id="plan-button" class="primary" type="submit">Get briefing</button>
+      </form>
+
+      <section class="card">
+        <h2>Saved plans</h2>
+        <ul id="saved" class="list"></ul>
+        <p id="saved-empty" class="muted">Nothing saved yet.</p>
+      </section>
+
+      <section class="card">
+        <h2>Cache</h2>
+        <table id="cache-table" class="mini"></table>
+        <button id="cache-clear" class="danger">Clear cache</button>
+        <p id="cache-note" class="muted"></p>
+      </section>
+
+      <details class="card lab">
+        <summary>Test lab</summary>
+        <p class="muted">Break things on purpose and watch what the traces do.</p>
+        <label>Weather provider
+          <select data-lab="weather" data-key="upstream"><option value="ok">Healthy</option><option value="slow">Slow (+2.5 s)</option><option value="failing">Failing (plans will error)</option></select></label>
+        <label>Route sampling (nm)
+          <select data-lab="planner" data-key="routeSampleNm" data-number><option value="25">25 (default)</option><option value="10">10 (more waypoints)</option><option value="5">5 (many waypoints)</option></select></label>
+      </details>
+    </aside>
+
+    <section class="main">
+      <div id="empty" class="card empty">
+        <h2>Where to?</h2>
+        <p class="muted">Enter two airports and get a briefing: route, winds, fuel, weight and balance, METAR and TAF for the departure, destination, alternates and airports along the way, and a go / no-go call.</p>
+      </div>
+      <div id="loading" class="card hidden"><div class="spinner"></div><span id="loading-text">Building briefing…</span></div>
+      <div id="result" class="hidden"></div>
+    </section>
+  </main>
+
+  <footer class="foot">Demonstration only. Not for navigation. Live data: aviationweather.gov (airports, METAR, TAF, winds aloft) and Open-Meteo (terrain). No NOTAMs.</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

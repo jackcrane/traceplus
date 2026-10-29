@@ -5,6 +5,7 @@ import TelemetryKit
 @main
 struct TelemetryFountainApp: App {
     @State private var emitter = TelemetryEmitter()
+    @State private var ramen = ContrailRunner()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -15,7 +16,8 @@ struct TelemetryFountainApp: App {
         WindowGroup("Telemetry Fountain") {
             EmitterView()
                 .environment(emitter)
-                .frame(minWidth: 650, minHeight: 520)
+                .environment(ramen)
+                .frame(minWidth: 650, minHeight: 760)
         }
     }
 }
